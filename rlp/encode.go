@@ -1,10 +1,10 @@
-package main
+package rlp
 
 import (
 	"reflect"
 	"math/big"
-	"fmt"
 	"errors"
+	"fmt"
 )
 
 func Encode(v interface{}) ([]byte, error) {
@@ -40,17 +40,49 @@ func getItem(v interface{}) (*Item, error) {
 		if item.size, item.itemList, err = getArray(v.([]interface{})); err != nil {
 			return nil, err
 		}
+	case isUint(typeOf.Kind()):
+		item.size = getUint(v.(uint))
+	case typeOf.Kind() == reflect.String:
+		item.size = getString(v.(string))
 	case typeOf.AssignableTo(bigInt):
 		if item.size, err = getInt(v.(big.Int)); err != nil {
 			return nil, err
 		}
 	case typeOf.Kind() == reflect.Bool:
+		println("Detected a bool")
 		item.size = getBool()
 	default:
 		return nil, fmt.Errorf("rlp: unsupported item type")
 	}
 
 	return &item, nil
+}
+
+func getUint(data uint) int {
+	if data < 128 {
+		return 1
+	} else {
+		return getBigEndianSize(data)
+
+	}
+}
+
+func getByteHeaderSize(data []byte) int {
+	if len(data) == 1 && data[0] <= 0x7F {
+		return 0
+	} else if len(data) < 56 {
+		return 1
+	} else {
+		return getBigEndianSize(uint(len(data))) + 1
+	}
+}
+
+func getBigEndianSize(num uint) int {
+	size := uint(1)
+
+	for ; num > 1 <<size; size++ {}
+
+	return int(size)
 }
 
 func getArray(v []interface{}) (int, []*Item, error) {
@@ -76,8 +108,12 @@ func getInt(v big.Int) (int, error) {
 	} else if cmp == 0 {
 		return 1, nil
 	} else {
-		return len(v.Bytes()), nil
+		return getByteHeaderSize(v.Bytes()) + len(v.Bytes()), nil
 	}
+}
+
+func getString(v string) int {
+	return getByteHeaderSize([]byte(v)) + len(v)
 }
 
 func getBool() int {
@@ -87,17 +123,29 @@ func getBool() int {
 func encodeItem(item *Item) []byte {
 	data := make([]byte, 0, item.size)
 
-	typeOf := reflect.TypeOf(item)
+	typeOf := reflect.TypeOf(item.v)
 	switch {
 	case typeOf.Kind() == reflect.Array:
-
+	case typeOf.Kind() == reflect.String:
+		data = encodeString(data, item.v.(string))
+	case isUint(typeOf.Kind()):
+		// TODO: encode uint
 	case typeOf.AssignableTo(bigInt):
 		data = encodeInt(data, item.v.(big.Int))
 	case typeOf.Kind() == reflect.Bool:
 		data = encodeBool(data, item.v.(bool))
 	}
+	println("data length", len(data))
 
 	return data
+}
+
+func encodeString(data []byte, v string) []byte {
+	if len(v) == 1 {
+		return encodeByte(data, v[0])
+	} else {
+		return encodeBytes(data, []byte(v))
+	}
 }
 
 func encodeInt(data []byte, v big.Int) []byte {
@@ -158,4 +206,8 @@ func convertBigEndian(size int) []byte {
 	}
 
 	return data
+}
+
+func isUint(k reflect.Kind) bool {
+	return k >= reflect.Uint && k <= reflect.Uintptr
 }

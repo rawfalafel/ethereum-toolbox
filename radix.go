@@ -1,9 +1,5 @@
 package main
 
-import (
-	"fmt"
-)
-
 func main() {
 	// Implement a radix trie
 	// Each node consists of an array of length 16 and a value
