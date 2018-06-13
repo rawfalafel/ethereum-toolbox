@@ -14,7 +14,12 @@ func Encode(v interface{}) ([]byte, error) {
 		return nil, err
 	}
 
+	println("size", item.size)
+
 	data := encodeItem(item)
+
+	println(fmt.Sprintf("value: %v", v))
+	println(fmt.Sprintf("data: %v\n", data))
 
 	return data, nil
 }
@@ -40,16 +45,15 @@ func getItem(v interface{}) (*Item, error) {
 		if item.size, item.itemList, err = getArray(v.([]interface{})); err != nil {
 			return nil, err
 		}
-	case isUint(typeOf.Kind()):
-		item.size = getUint(v.(uint))
-	case typeOf.Kind() == reflect.String:
-		item.size = getString(v.(string))
 	case typeOf.AssignableTo(bigInt):
 		if item.size, err = getInt(v.(big.Int)); err != nil {
 			return nil, err
 		}
+	case isUint(typeOf.Kind()):
+		item.size = getUint(reflect.ValueOf(v).Uint())
+	case typeOf.Kind() == reflect.String:
+		item.size = getString(v.(string))
 	case typeOf.Kind() == reflect.Bool:
-		println("Detected a bool")
 		item.size = getBool()
 	default:
 		return nil, fmt.Errorf("rlp: unsupported item type")
@@ -58,12 +62,11 @@ func getItem(v interface{}) (*Item, error) {
 	return &item, nil
 }
 
-func getUint(data uint) int {
+func getUint(data uint64) int {
 	if data < 128 {
 		return 1
 	} else {
-		return getBigEndianSize(data)
-
+		return getBigEndianSize(uint(data)) + 1
 	}
 }
 
@@ -78,11 +81,12 @@ func getByteHeaderSize(data []byte) int {
 }
 
 func getBigEndianSize(num uint) int {
-	size := uint(1)
+	i := uint(0)
+	for ; num >= 1; i++ {
+		num = num >> 8
+	}
 
-	for ; num > 1 <<size; size++ {}
-
-	return int(size)
+	return int(i)
 }
 
 func getArray(v []interface{}) (int, []*Item, error) {
@@ -121,6 +125,7 @@ func getBool() int {
 }
 
 func encodeItem(item *Item) []byte {
+	println("encodeItem")
 	data := make([]byte, 0, item.size)
 
 	typeOf := reflect.TypeOf(item.v)
@@ -129,13 +134,12 @@ func encodeItem(item *Item) []byte {
 	case typeOf.Kind() == reflect.String:
 		data = encodeString(data, item.v.(string))
 	case isUint(typeOf.Kind()):
-		// TODO: encode uint
+		data = encodeUint(data, reflect.ValueOf(item.v).Uint())
 	case typeOf.AssignableTo(bigInt):
 		data = encodeInt(data, item.v.(big.Int))
 	case typeOf.Kind() == reflect.Bool:
 		data = encodeBool(data, item.v.(bool))
 	}
-	println("data length", len(data))
 
 	return data
 }
@@ -148,13 +152,29 @@ func encodeString(data []byte, v string) []byte {
 	}
 }
 
+func encodeUint(data []byte, v uint64) []byte {
+	if v == 0 {
+		return append(data, 0x80)
+	} else if v < 128 {
+		return encodeByte(data, byte(v))
+	} else {
+		b := convertBigEndian(uint(v))
+		return encodeBytes(data, b)
+	}
+}
+
 func encodeInt(data []byte, v big.Int) []byte {
 	if cmp := v.Cmp(big0); cmp == -1 {
 		panic("rlp: can not encode negative big.Int")
 	} else if cmp == 0 {
-		return encodeByte(data, 0x80)
+		return append(data, 0x80)
 	} else {
-		return encodeBytes(data, v.Bytes())
+		vb := v.Bytes()
+		if len(vb) == 1 {
+			return encodeByte(data, vb[0])
+		} else {
+			return encodeBytes(data, vb)
+		}
 	}
 }
 
@@ -180,29 +200,23 @@ func encodeBytes(data []byte, b []byte) []byte {
 }
 
 func encodeByteHeader(data []byte, size int) []byte {
+	println("encodeByteHeader size", size)
 	if size < 56 {
 		return append(data, 0x80+byte(size))
 	} else {
-		byteHeader := convertBigEndian(size)
+		byteHeader := convertBigEndian(uint(size))
 		data = append(data, 0xb7 + byte(len(byteHeader)))
 		data = append(data, byteHeader...)
 		return data
 	}
 }
 
-func convertBigEndian(size int) []byte {
-	data := make([]byte, 0, 8)
-	// TODO: confirm if necessary to convert to uint64
-	usize := uint(size)
+func convertBigEndian(num uint) []byte {
+	println("convertBigEndian")
+	data := make([]byte, 0)
 
-	for i := uint(0); usize > 1 << i; i += 8 {
-		data = append(data, byte(i >> i))
-	}
-
-	size = len(data)
-	for i := 0; i < len(data) / 2; i++ {
-		j := size-i-1
-		data[i], data[j] = data[j], data[i]
+	for ; num >= 1; num = num >> 8 {
+		data = append([]byte{ byte(num) }, data...)
 	}
 
 	return data
