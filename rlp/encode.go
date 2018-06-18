@@ -5,21 +5,26 @@ import (
 	"math/big"
 	"errors"
 	"fmt"
+	"io"
 )
 
 func Encode(v interface{}) ([]byte, error) {
+	println(fmt.Sprintf("Encode: %v", v))
 	// Before marshaling, determine the length of the final array
 	item, err := getItem(v)
 	if err != nil {
 		return nil, err
 	}
 
-	println("size", item.size)
+	println("Size", item.size)
 
-	data := encodeItem(item)
+	data := make([]byte, 0, item.size)
+	data = encodeItem(data, item)
 
-	println(fmt.Sprintf("value: %v", v))
-	println(fmt.Sprintf("data: %v\n", data))
+	println(fmt.Sprintf("Result: %x\n", data))
+	if len(data) != item.size {
+		return nil, fmt.Errorf("final array should be %d bytes not %d", item.size, len(data))
+	}
 
 	return data, nil
 }
@@ -28,19 +33,20 @@ type Item struct {
 	size     int
 	v        interface{}
 	itemList []*Item
+	dataSize int
 }
 
-// TODO: Remove and use the actual interfacd
-type Encoder interface {}
+type Encoder interface {
+	EncodeRLP(io.Writer) error
+}
 
 var (
 	encoderInterface = reflect.TypeOf(new(Encoder)).Elem()
 	bigInt = reflect.TypeOf(big.Int{})
-	big0   = big.NewInt(0)
 )
 
 func getItem(v interface{}) (*Item, error) {
-	item := Item{ v: v }
+	item := &Item{ v: v }
 	err := errors.New("")
 
 	typ := reflect.TypeOf(v)
@@ -54,25 +60,72 @@ func getItem(v interface{}) (*Item, error) {
 		if item.size, err = getInt(v.(big.Int)); err != nil {
 			return nil, err
 		}
-	case isUint(typ.Kind()):
+	case isUint(kind):
 		item.size = getUint(reflect.ValueOf(v).Uint())
-	case typ.Kind() == reflect.String:
-		item.size = getString(v.(string))
-	case typ.Kind() == reflect.Bool:
+	case kind == reflect.String:
+		if item.size, err = getString(v.(string)); err != nil {
+			return nil, err
+		}
+	case kind == reflect.Bool:
 		item.size = getBool()
 	case kind == reflect.Slice && isByte(typ.Elem()):
-		item.size = getString(v.(string))
+		if item.size, err = getByteSlice(v.([]byte)); err != nil {
+			return nil, err
+		}
 	case kind == reflect.Array && isByte(typ.Elem()):
-		item.size = getString(v.(string))
-	case kind == reflect.Array || kind == reflect.Slice:
-		if item.size, item.itemList, err = getArray(v.([]interface{})); err != nil {
+		bytes := v.([]byte)
+		if item.size, err = getString(string(bytes)); err != nil {
+			return nil, err
+		}
+	case kind == reflect.Slice:
+		if item, err = getSlice(v); err != nil {
 			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("rlp: unsupported item type")
 	}
 
-	return &item, nil
+	return item, nil
+}
+
+func getSlice(v interface{}) (*Item, error) {
+	val := reflect.ValueOf(v)
+	len := val.Len()
+
+	item := &Item{ 0, v, make([]*Item, 0, len), 0 }
+
+	for i := 0; i < len; i++ {
+		arrayItem, err := getItem(val.Index(i).Interface())
+		if err != nil {
+			return nil, fmt.Errorf("err at index %d: %v", i, err)
+		}
+
+		item.dataSize += arrayItem.size
+		item.itemList = append(item.itemList, arrayItem)
+	}
+
+	listHeaderSize, err := getListHeaderSize(item.dataSize)
+	if err != nil {
+		return nil, err
+	}
+
+	item.size = item.dataSize + listHeaderSize
+
+	return item, nil
+}
+
+func getListHeaderSize(size int) (int, error) {
+	if size < 56 {
+		return 1, nil
+	} else if encodedSize := getBigEndianSize(uint(size)); encodedSize > 9 {
+		return 0, fmt.Errorf("encoding size exceeded limit: %d bytes long", size)
+	} else {
+		return encodedSize + 1, nil
+	}
+}
+
+func getByteSlice(data []byte) (int, error) {
+	return getString(string(data))
 }
 
 func getUint(data uint64) int {
@@ -83,13 +136,16 @@ func getUint(data uint64) int {
 	}
 }
 
-func getByteHeaderSize(data []byte) int {
-	if len(data) == 1 && data[0] <= 0x7F {
-		return 0
-	} else if len(data) < 56 {
-		return 1
+func getByteHeaderSize(data []byte) (int, error) {
+	size := len(data)
+	if size == 1 && data[0] <= 0x7F {
+		return 0, nil
+	} else if size < 56 {
+		return 1, nil
+	} else if encodedSize := getBigEndianSize(uint(size)); encodedSize > 9 {
+		return 0, fmt.Errorf("encoding size exceeded limit: %d bytes long", size)
 	} else {
-		return getBigEndianSize(uint(len(data))) + 1
+		return encodedSize + 1, nil
 	}
 }
 
@@ -122,12 +178,18 @@ func getArray(v []interface{}) (int, []*Item, error) {
 func getIntPtr(v *big.Int) (int, error) {
 	if v == nil {
 		return 1, nil
-	} else if cmp := v.Cmp(big0); cmp == -1 {
+	} else if sign := v.Sign(); sign == -1 {
 		return 0, fmt.Errorf("rlp: cannot encode negative *big.Int")
-	} else if cmp == 0 {
+	} else if sign == 0 {
 		return 1, nil
 	} else {
-		return getByteHeaderSize(v.Bytes()) + len(v.Bytes()), nil
+		intAsBytes := v.Bytes()
+		byteHeaderSize, err := getByteHeaderSize(intAsBytes)
+		if err != nil {
+			return 0, err
+		}
+
+		return byteHeaderSize + len(intAsBytes), nil
 	}
 
 }
@@ -136,49 +198,89 @@ func getInt(v big.Int) (int, error) {
 	return getIntPtr(&v)
 }
 
-func getString(v string) int {
-	return getByteHeaderSize([]byte(v)) + len(v)
+func getString(v string) (int, error) {
+	// TODO: Optimize this to avoid converting to a byte array
+	byteHeaderSize, err := getByteHeaderSize([]byte(v))
+	if err != nil {
+		return 0, err
+	}
+
+	return byteHeaderSize + len(v), nil
 }
 
 func getBool() int {
 	return 1
 }
 
-func encodeItem(item *Item) []byte {
-	data := make([]byte, 0, item.size)
-
+func encodeItem(data []byte, item *Item) []byte {
 	typ := reflect.TypeOf(item.v)
 	kind := typ.Kind()
 	switch {
-	case kind == reflect.Slice && isByte(typ.Elem()):
-		data = encodeString(data, item.v.(string))
-	case kind == reflect.Array && isByte(typ.Elem()):
-		data = encodeString(data, item.v.(string))
-	case typ.Kind() == reflect.Array:
-	case typ.Kind() == reflect.String:
-		data = encodeString(data, item.v.(string))
-	case isUint(typ.Kind()):
-		data = encodeUint(data, reflect.ValueOf(item.v).Uint())
 	case typ.AssignableTo(reflect.PtrTo(bigInt)):
-		data = encodeIntPtr(data, item.v.(*big.Int))
+		data = encodeIntPtr(data, item)
 	case typ.AssignableTo(bigInt):
-		data = encodeInt(data, item.v.(big.Int))
+		data = encodeInt(data, item)
+	case isUint(typ.Kind()):
+		data = encodeUint(data, item)
+	case typ.Kind() == reflect.String:
+		data = encodeString(data, item)
 	case typ.Kind() == reflect.Bool:
-		data = encodeBool(data, item.v.(bool))
+		data = encodeBool(data, item)
+	case kind == reflect.Slice && isByte(typ.Elem()):
+		data = encodeByteSlice(data, item)
+	case kind == reflect.Array && isByte(typ.Elem()):
+		data = encodeString(data, item)
+	case typ.Kind() == reflect.Slice:
+		data = encodeSlice(data, item)
+	case typ.Kind() == reflect.Array:
 	}
 
 	return data
 }
 
-func encodeString(data []byte, v string) []byte {
+func encodeSlice(data []byte, item *Item) []byte {
+	data = encodeListHeader(data, item.dataSize)
+
+	for i := 0; i < len(item.itemList); i++ {
+		data = encodeItem(data, item.itemList[i])
+	}
+
+	return data
+}
+
+func encodeListHeader(data []byte, size int) []byte {
+	if size < 56 {
+		return append(data, 0xc0+byte(size))
+	} else {
+		byteHeader := convertBigEndian(uint(size))
+		data = append(data, 0xf7 + byte(len(byteHeader)))
+		return append(data, byteHeader...)
+	}
+	return nil
+}
+
+func encodeByteSlice(data []byte, item *Item) []byte {
+	v := item.v.([]byte)
+
 	if len(v) == 1 {
 		return encodeByte(data, v[0])
 	} else {
-		return encodeBytes(data, []byte(v))
+		return encodeBytes(data, v)
 	}
 }
 
-func encodeUint(data []byte, v uint64) []byte {
+func encodeString(data []byte, item *Item) []byte {
+	v := item.v.(string)
+	if len(v) == 1 {
+		return encodeByte(data, v[0])
+	} else {
+		data = encodeByteHeader(data, len(v))
+		return append(data, v...)
+	}
+}
+
+func encodeUint(data []byte, item *Item) []byte {
+	v := reflect.ValueOf(item.v).Uint()
 	if v == 0 {
 		return append(data, 0x80)
 	} else if v < 128 {
@@ -189,23 +291,30 @@ func encodeUint(data []byte, v uint64) []byte {
 	}
 }
 
-func encodeIntPtr(data []byte, v *big.Int) []byte {
-	if cmp := v.Cmp(big0); cmp == -1 {
+func encodeIntPtr(data []byte, item *Item) []byte {
+	v := item.v.(*big.Int)
+	return encodeBigInt(data, v)
+}
+
+func encodeInt(data []byte, item *Item) []byte {
+	v := item.v.(big.Int)
+	return encodeBigInt(data, &v)
+}
+
+func encodeBigInt(data []byte, v *big.Int) []byte {
+	if sign := v.Sign(); sign < 0 {
 		panic("rlp: can not encode negative big.Int")
-	} else if cmp == 0 {
+	} else if sign == 0 {
 		return append(data, 0x80)
-	} else if vb := v.Bytes(); len(vb) == 1{
+	} else if vb := v.Bytes(); len(vb) == 1 {
 		return encodeByte(data, vb[0])
 	} else {
 		return encodeBytes(data, vb)
 	}
 }
 
-func encodeInt(data []byte, v big.Int) []byte {
-	return encodeIntPtr(data, &v)
-}
-
-func encodeBool(data []byte, v bool) []byte {
+func encodeBool(data []byte, item *Item) []byte {
+	v := item.v.(bool)
 	if v {
 		return append(data, 0x01)
 	} else {
