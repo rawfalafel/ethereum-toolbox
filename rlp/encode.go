@@ -81,9 +81,64 @@ func getItem(v interface{}) (*Item, error) {
 		if item, err = getSlice(v); err != nil {
 			return nil, err
 		}
+	case kind == reflect.Struct:
+		if item, err = getStruct(v); err != nil {
+			return nil, err
+		}
+	case kind == reflect.Ptr:
+		if item, err = getPtr(v); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("rlp: unsupported item type")
 	}
+
+	return item, nil
+}
+
+func getPtr(v interface{}) (*Item, error) {
+	item := &Item{ v: v }
+
+	val := reflect.ValueOf(v)
+	if val.IsNil() {
+		item.size = 1
+		return item, nil
+	}
+
+	item, err := getItem(val.Elem().Interface())
+	if err != nil {
+		return nil, fmt.Errorf("cannot encode pointer: %v", err)
+	}
+
+	return item, nil
+}
+
+func getStruct(v interface{}) (*Item, error) {
+	val := reflect.ValueOf(v)
+	typ := val.Type()
+
+	len := val.NumField()
+
+	item := &Item{ 0, v, make([]*Item, 0, len), 0 }
+	for i := 0; i < val.NumField(); i++ {
+		f := val.Field(i)
+		structF := typ.Field(i)
+
+		arrayItem, err := getItem(f.Interface())
+		if err != nil {
+			return nil, fmt.Errorf("cannot encode struct %v: %v", structF.Name, err)
+		}
+
+		item.itemList = append(item.itemList, arrayItem)
+		item.dataSize += arrayItem.size
+	}
+
+	listHeaderSize, err := getListHeaderSize(item.dataSize)
+	if err != nil {
+		return nil, fmt.Errorf("cannot encode struct: %v", err)
+	}
+
+	item.size = item.dataSize + listHeaderSize
 
 	return item, nil
 }
@@ -230,12 +285,36 @@ func encodeItem(data []byte, item *Item) []byte {
 		data = encodeByteSlice(data, item)
 	case kind == reflect.Array && isByte(typ.Elem()):
 		data = encodeString(data, item)
-	case typ.Kind() == reflect.Slice:
+	case kind == reflect.Slice:
 		data = encodeSlice(data, item)
-	case typ.Kind() == reflect.Array:
+	case kind == reflect.Array:
+	case kind == reflect.Struct:
+		data = encodeStruct(data, item)
+	case kind == reflect.Ptr:
+		data = encodePtr(data, item)
 	}
 
 	return data
+}
+
+func encodePtr(data []byte, item *Item) []byte {
+	val := reflect.ValueOf(item.v)
+	if val.IsNil() {
+		typ := reflect.TypeOf(item.v).Elem()
+		kind := typ.Kind()
+
+		if kind == reflect.Array && isByte(typ.Elem()) {
+			return append(data, 0x80)
+		} else if kind == reflect.Struct || kind == reflect.Array {
+			return append(data, 0xc0)
+		} else {
+			// TODO: fix this
+
+			return append(data, 0x80)
+		}
+	}
+
+	panic("This shouldn't happen")
 }
 
 func encodeSlice(data []byte, item *Item) []byte {
@@ -246,6 +325,10 @@ func encodeSlice(data []byte, item *Item) []byte {
 	}
 
 	return data
+}
+
+func encodeStruct(data []byte, item *Item) []byte {
+	return encodeSlice(data, item)
 }
 
 func encodeListHeader(data []byte, size int) []byte {
@@ -293,6 +376,9 @@ func encodeUint(data []byte, item *Item) []byte {
 
 func encodeIntPtr(data []byte, item *Item) []byte {
 	v := item.v.(*big.Int)
+	if v == nil {
+		return append(data, 0x80)
+	}
 	return encodeBigInt(data, v)
 }
 

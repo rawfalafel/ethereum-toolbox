@@ -14,6 +14,16 @@ type encTest struct {
 	output, error string
 }
 
+type simplestruct struct {
+	A uint
+	B string
+}
+
+type recstruct struct {
+	I     uint
+	Child *recstruct `rlp:"nil"`
+}
+
 var encTests = []encTest{
 	// booleans
 	{val: true, output: "01"},
@@ -153,8 +163,8 @@ var encTests = []encTest{
 	//{val: []RawValue{unhex("01"), unhex("02")}, output: "C20102"},
 
 	// structs
-	//{val: simplestruct{}, output: "C28080"},
-	//{val: simplestruct{A: 3, B: "foo"}, output: "C50383666F6F"},
+	{val: simplestruct{}, output: "C28080"},
+	{val: simplestruct{A: 3, B: "foo"}, output: "C50383666F6F"},
 	//{val: &recstruct{5, nil}, output: "C205C0"},
 	//{val: &recstruct{5, &recstruct{4, &recstruct{3, nil}}}, output: "C605C404C203C0"},
 	//{val: &tailRaw{A: 1, Tail: []RawValue{unhex("02"), unhex("03")}}, output: "C3010203"},
@@ -164,12 +174,12 @@ var encTests = []encTest{
 	//{val: &hasIgnoredField{A: 1, B: 2, C: 3}, output: "C20103"},
 
 	// nil
-	//{val: (*uint)(nil), output: "80"},
-	//{val: (*string)(nil), output: "80"},
-	//{val: (*[]byte)(nil), output: "80"},
-	//{val: (*[10]byte)(nil), output: "80"},
-	//{val: (*big.Int)(nil), output: "80"},
-	//{val: (*[]string)(nil), output: "C0"},
+	{val: (*uint)(nil), output: "80"},
+	{val: (*string)(nil), output: "80"},
+	{val: (*[]byte)(nil), output: "80"},
+	{val: (*[10]byte)(nil), output: "80"},
+	{val: (*big.Int)(nil), output: "80"},
+	{val: (*[]string)(nil), output: "C0"},
 	//{val: (*[10]string)(nil), output: "C0"},
 	//{val: (*[]interface{})(nil), output: "C0"},
 	//{val: (*[]struct{ uint })(nil), output: "C0"},
