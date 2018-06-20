@@ -6,30 +6,57 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
-func Encode(v interface{}) ([]byte, error) {
+type writer struct {
+	data []byte
+}
+
+func newWriter(size int) *writer {
+	return &writer{ make([]byte, 0, size) }
+}
+
+func (w *writer) Write(p []byte) (int, error) {
+	w.data = append(w.data, p...)
+	return len(p), nil
+}
+
+func EncodeToBytes(v interface{}) ([]byte, error) {
 	// Before marshaling, determine the length of the final array
 	item, err := getItem(v)
 	if err != nil {
 		return nil, err
 	}
 
-	data := make([]byte, 0, item.size)
-	data = encodeItem(data, item)
-
-	if len(data) != item.size {
-		return nil, fmt.Errorf("final array should be %d bytes not %d", item.size, len(data))
+	w := newWriter(item.size)
+	if err = encodeItem(w, item); err != nil {
+		return nil, err
 	}
 
-	return data, nil
+	if len(w.data) != item.size {
+		return nil, fmt.Errorf("final array should be %d bytes not %d", item.size, len(w.data))
+	}
+
+	return w.data, nil
+}
+
+func Encode(w io.Writer, v interface{}) error {
+	item, err := getItem(v)
+	if err != nil {
+		return err
+	}
+
+	encodeItem(w, item)
+	return nil
 }
 
 type Item struct {
-	size     int
-	v        interface{}
-	itemList []*Item
-	dataSize int
+	size       int
+	v          interface{}
+	itemList   []*Item
+	dataSize   int
+	w          *writer
 }
 
 type Encoder interface {
@@ -53,6 +80,10 @@ func getItem(v interface{}) (*Item, error) {
 
 	kind := typ.Kind()
 	switch {
+	case typ.Implements(encoderInterface):
+		if item, err = getEncoder(v); err != nil {
+			return nil, err
+		}
 	case typ.AssignableTo(reflect.PtrTo(bigInt)):
 		if item.size, err = getIntPtr(v.(*big.Int)); err != nil {
 			return nil, err
@@ -97,6 +128,16 @@ func getItem(v interface{}) (*Item, error) {
 	return item, nil
 }
 
+func getEncoder(v interface{}) (*Item, error) {
+	item := &Item{ v: v, w: newWriter(0) }
+	if err := v.(Encoder).EncodeRLP(item.w); err != nil {
+		return nil, err
+	}
+	item.size = len(item.w.data)
+
+	return item, nil
+}
+
 func getPtr(v interface{}) (*Item, error) {
 	item := &Item{ v: v }
 
@@ -120,10 +161,23 @@ func getStruct(v interface{}) (*Item, error) {
 
 	len := val.NumField()
 
-	item := &Item{ 0, v, make([]*Item, 0, len), 0 }
+	item := &Item{ v: v, itemList: make([]*Item, 0, len) }
 	for i := 0; i < val.NumField(); i++ {
 		f := val.Field(i)
 		structF := typ.Field(i)
+
+		// ignore unexported fields
+		if structF.PkgPath != "" {
+			continue
+		}
+
+		tags, err := parseStructTag(typ, i)
+		if err != nil {
+			return nil, err
+		}
+		if tags.ignored {
+			continue
+		}
 
 		arrayItem, err := getItem(f.Interface())
 		if err != nil {
@@ -144,11 +198,47 @@ func getStruct(v interface{}) (*Item, error) {
 	return item, nil
 }
 
+type tags struct {
+	// rlp:"nil" controls whether empty input results in a nil pointer.
+	nilOK bool
+	// rlp:"tail" controls whether this field swallows additional list
+	// elements. It can only be set for the last field, which must be
+	// of slice type.
+	tail bool
+	// rlp:"-" ignores fields.
+	ignored bool
+}
+
+func parseStructTag(typ reflect.Type, fi int) (tags, error) {
+	f := typ.Field(fi)
+	var ts tags
+	for _, t := range strings.Split(f.Tag.Get("rlp"), ",") {
+		switch t = strings.TrimSpace(t); t {
+		case "":
+		case "-":
+			ts.ignored = true
+		case "nil":
+			ts.nilOK = true
+		case "tail":
+			ts.tail = true
+			if fi != typ.NumField()-1 {
+				return ts, fmt.Errorf(`rlp: invalid struct tag "tail" for %v.%s (must be on last field)`, typ, f.Name)
+			}
+			if f.Type.Kind() != reflect.Slice {
+				return ts, fmt.Errorf(`rlp: invalid struct tag "tail" for %v.%s (field type is not slice)`, typ, f.Name)
+			}
+		default:
+			return ts, fmt.Errorf("rlp: unknown struct tag %q on %v.%s", t, typ, f.Name)
+		}
+	}
+	return ts, nil
+}
+
 func getSlice(v interface{}) (*Item, error) {
 	val := reflect.ValueOf(v)
 	len := val.Len()
 
-	item := &Item{ 0, v, make([]*Item, 0, len), 0 }
+	item := &Item{  v: v, itemList: make([]*Item, 0, len) }
 
 	for i := 0; i < len; i++ {
 		arrayItem, err := getItem(val.Index(i).Interface())
@@ -268,172 +358,200 @@ func getBool() int {
 	return 1
 }
 
-func encodeItem(data []byte, item *Item) []byte {
+func encodeItem(w io.Writer, item *Item) error {
 	typ := reflect.TypeOf(item.v)
 	if typ == nil {
-		return append(data, 0xc0)
+		return writeByte(w, 0xc0)
 	}
 
 	kind := typ.Kind()
 	switch {
+	case typ.Implements(encoderInterface):
+		return encodeEncoder(w, item)
 	case typ.AssignableTo(reflect.PtrTo(bigInt)):
-		data = encodeIntPtr(data, item)
+		return encodeIntPtr(w, item)
 	case typ.AssignableTo(bigInt):
-		data = encodeInt(data, item)
+		return encodeInt(w, item)
 	case isUint(typ.Kind()):
-		data = encodeUint(data, item)
+		return encodeUint(w, item)
 	case typ.Kind() == reflect.String:
-		data = encodeString(data, item)
+		return encodeString(w, item)
 	case typ.Kind() == reflect.Bool:
-		data = encodeBool(data, item)
+		return encodeBool(w, item)
 	case kind == reflect.Slice && isByte(typ.Elem()):
-		data = encodeByteSlice(data, item)
+		return encodeByteSlice(w, item)
 	case kind == reflect.Array && isByte(typ.Elem()):
-		data = encodeString(data, item)
+		return encodeString(w, item)
 	case kind == reflect.Slice:
-		data = encodeSlice(data, item)
+		return encodeSlice(w, item)
 	case kind == reflect.Array:
 	case kind == reflect.Struct:
-		data = encodeStruct(data, item)
+		return encodeStruct(w, item)
 	case kind == reflect.Ptr:
-		data = encodePtr(data, item)
+		return encodePtr(w, item)
 	}
 
-	return data
+	panic("This should never happen")
 }
 
-func encodePtr(data []byte, item *Item) []byte {
+func encodeEncoder(w io.Writer, item *Item) error {
+	return writeBytes(w, item.w.data)
+}
+
+func encodePtr(w io.Writer, item *Item) error {
 	val := reflect.ValueOf(item.v)
 	if val.IsNil() {
 		typ := reflect.TypeOf(item.v).Elem()
 		kind := typ.Kind()
 
 		if kind == reflect.Array && isByte(typ.Elem()) {
-			return append(data, 0x80)
+			return writeByte(w, 0x80)
 		} else if kind == reflect.Struct || kind == reflect.Array {
-			return append(data, 0xc0)
+			return writeByte(w, 0xc0)
 		} else {
 			v := reflect.Zero(typ).Interface()
 			item, _ := getItem(v)
-			return encodeItem(data, item)
+			return encodeItem(w, item)
 		}
 	}
 
 	panic("This shouldn't happen")
 }
 
-func encodeSlice(data []byte, item *Item) []byte {
-	data = encodeListHeader(data, item.dataSize)
-
-	for i := 0; i < len(item.itemList); i++ {
-		data = encodeItem(data, item.itemList[i])
+func encodeSlice(w io.Writer, item *Item) error {
+	if err := encodeListHeader(w, item.dataSize); err != nil {
+		return err
 	}
 
-	return data
+	for i := 0; i < len(item.itemList); i++ {
+		if err := encodeItem(w, item.itemList[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-func encodeStruct(data []byte, item *Item) []byte {
-	return encodeSlice(data, item)
+func encodeStruct(w io.Writer, item *Item) error {
+	return encodeSlice(w, item)
 }
 
-func encodeListHeader(data []byte, size int) []byte {
+func encodeListHeader(w io.Writer, size int) error {
 	if size < 56 {
-		return append(data, 0xc0+byte(size))
+		return writeByte(w, 0xc0+byte(size))
 	} else {
 		byteHeader := convertBigEndian(uint(size))
-		data = append(data, 0xf7 + byte(len(byteHeader)))
-		return append(data, byteHeader...)
+		if err := writeByte(w, 0xf7 + byte(len(byteHeader))); err != nil {
+			return err
+		}
+
+		return writeBytes(w, byteHeader)
 	}
 	return nil
 }
 
-func encodeByteSlice(data []byte, item *Item) []byte {
+func encodeByteSlice(w io.Writer, item *Item) error {
 	v := item.v.([]byte)
 
 	if len(v) == 1 {
-		return encodeByte(data, v[0])
+		return encodeByte(w, v[0])
 	} else {
-		return encodeBytes(data, v)
+		return encodeBytes(w, v)
 	}
 }
 
-func encodeString(data []byte, item *Item) []byte {
+func encodeString(w io.Writer, item *Item) error {
 	v := item.v.(string)
 	if len(v) == 1 {
-		return encodeByte(data, v[0])
+		return encodeByte(w, v[0])
 	} else {
-		data = encodeByteHeader(data, len(v))
-		return append(data, v...)
+		if err := encodeByteHeader(w, len(v)); err != nil {
+			return err
+		}
+		return writeBytes(w, []byte(v))
 	}
 }
 
-func encodeUint(data []byte, item *Item) []byte {
+func encodeUint(w io.Writer, item *Item) error {
 	v := reflect.ValueOf(item.v).Uint()
 	if v == 0 {
-		return append(data, 0x80)
+		return writeByte(w, 0x80)
 	} else if v < 128 {
-		return encodeByte(data, byte(v))
+		return encodeByte(w, byte(v))
 	} else {
 		b := convertBigEndian(uint(v))
-		return encodeBytes(data, b)
+		return encodeBytes(w, b)
 	}
 }
 
-func encodeIntPtr(data []byte, item *Item) []byte {
+func encodeIntPtr(w io.Writer, item *Item) error {
 	v := item.v.(*big.Int)
 	if v == nil {
-		return append(data, 0x80)
+		return writeByte(w, 0x80)
 	}
-	return encodeBigInt(data, v)
+	return encodeBigInt(w, v)
 }
 
-func encodeInt(data []byte, item *Item) []byte {
+func encodeInt(w io.Writer, item *Item) error {
 	v := item.v.(big.Int)
-	return encodeBigInt(data, &v)
+	return encodeBigInt(w, &v)
 }
 
-func encodeBigInt(data []byte, v *big.Int) []byte {
+func encodeBigInt(w io.Writer, v *big.Int) error {
 	if sign := v.Sign(); sign < 0 {
 		panic("rlp: can not encode negative big.Int")
 	} else if sign == 0 {
-		return append(data, 0x80)
+		return writeByte(w, 0x80)
 	} else if vb := v.Bytes(); len(vb) == 1 {
-		return encodeByte(data, vb[0])
+		return encodeByte(w, vb[0])
 	} else {
-		return encodeBytes(data, vb)
+		return encodeBytes(w, vb)
 	}
 }
 
-func encodeBool(data []byte, item *Item) []byte {
+func encodeBool(w io.Writer, item *Item) error {
 	v := item.v.(bool)
 	if v {
-		return append(data, 0x01)
+		return writeByte(w, 0x01)
 	} else {
-		return append(data, 0x80)
+		return writeByte(w, 0x80)
 	}
 }
 
-func encodeByte(data []byte, b byte) []byte {
+func writeByte(w io.Writer, b byte) error {
+	_, err := w.Write([]byte{b})
+	return err
+}
+
+func writeBytes(w io.Writer, b []byte) error {
+	_, err := w.Write(b)
+	return err
+}
+
+func encodeByte(w io.Writer, b byte) error {
 	if b <= 0x7F {
-		return append(data, b)
+		return writeByte(w, b)
 	} else {
-		return append(data, 0x81, b)
+		return writeBytes(w, []byte{0x81,b})
 	}
 }
 
-func encodeBytes(data []byte, b []byte) []byte {
-	data = encodeByteHeader(data, len(b))
-	return append(data, b...)
+func encodeBytes(w io.Writer, b []byte) error {
+	if err := encodeByteHeader(w, len(b)); err != nil {
+		return err
+	}
+	return writeBytes(w, b)
 }
 
-func encodeByteHeader(data []byte, size int) []byte {
+func encodeByteHeader(w io.Writer, size int) error {
 	if size < 56 {
-		return append(data, 0x80+byte(size))
+		return writeByte(w, 0x80+byte(size))
 	} else {
 		byteHeader := convertBigEndian(uint(size))
-		data = append(data, 0xb7 + byte(len(byteHeader)))
-		data = append(data, byteHeader...)
-		return data
+		if err := writeByte(w, 0xb7 + byte(len(byteHeader))); err != nil {
+			return err
+		}
+		return writeBytes(w, byteHeader)
 	}
 }
 

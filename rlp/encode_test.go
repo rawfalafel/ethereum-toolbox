@@ -238,7 +238,7 @@ func runEncTests(t *testing.T, f func(val interface{}) ([]byte, error)) {
 
 func TestEncode(t *testing.T) {
 	runEncTests(t, func(val interface{}) ([]byte, error) {
-		b, err := Encode(val)
+		b, err := EncodeToBytes(val)
 		return b, err
 	})
 }
