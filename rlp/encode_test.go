@@ -180,10 +180,11 @@ var encTests = []encTest{
 	{val: (*[10]byte)(nil), output: "80"},
 	{val: (*big.Int)(nil), output: "80"},
 	{val: (*[]string)(nil), output: "C0"},
-	//{val: (*[10]string)(nil), output: "C0"},
-	//{val: (*[]interface{})(nil), output: "C0"},
-	//{val: (*[]struct{ uint })(nil), output: "C0"},
-	//{val: (*interface{})(nil), output: "C0"},
+	{val: (*[10]string)(nil), output: "C0"},
+	{val: (*[]interface{})(nil), output: "C0"},
+	{val: (*[]struct{ uint })(nil), output: "C0"},
+	{val: (interface{})(nil), output: "C0"},
+	{val: (*interface{})(nil), output: "C0"},
 
 	// interfaces
 	//{val: []io.Reader{reader}, output: "C3C20102"}, // the contained value is a struct

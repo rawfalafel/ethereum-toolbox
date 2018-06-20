@@ -9,7 +9,6 @@ import (
 )
 
 func Encode(v interface{}) ([]byte, error) {
-	println(fmt.Sprintf("Encode: %v", v))
 	// Before marshaling, determine the length of the final array
 	item, err := getItem(v)
 	if err != nil {
@@ -50,6 +49,11 @@ func getItem(v interface{}) (*Item, error) {
 	err := errors.New("")
 
 	typ := reflect.TypeOf(v)
+	if typ == nil {
+		item.size = 1
+		return item, nil
+	}
+
 	kind := typ.Kind()
 	switch {
 	case typ.AssignableTo(reflect.PtrTo(bigInt)):
@@ -269,6 +273,10 @@ func getBool() int {
 
 func encodeItem(data []byte, item *Item) []byte {
 	typ := reflect.TypeOf(item.v)
+	if typ == nil {
+		return append(data, 0xc0)
+	}
+
 	kind := typ.Kind()
 	switch {
 	case typ.AssignableTo(reflect.PtrTo(bigInt)):
@@ -308,9 +316,9 @@ func encodePtr(data []byte, item *Item) []byte {
 		} else if kind == reflect.Struct || kind == reflect.Array {
 			return append(data, 0xc0)
 		} else {
-			// TODO: fix this
-
-			return append(data, 0x80)
+			v := reflect.Zero(typ).Interface()
+			item, _ := getItem(v)
+			return encodeItem(data, item)
 		}
 	}
 
