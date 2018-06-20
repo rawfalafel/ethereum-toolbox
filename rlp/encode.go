@@ -15,12 +15,9 @@ func Encode(v interface{}) ([]byte, error) {
 		return nil, err
 	}
 
-	println("Size", item.size)
-
 	data := make([]byte, 0, item.size)
 	data = encodeItem(data, item)
 
-	println(fmt.Sprintf("Result: %x\n", data))
 	if len(data) != item.size {
 		return nil, fmt.Errorf("final array should be %d bytes not %d", item.size, len(data))
 	}

@@ -24,6 +24,19 @@ type recstruct struct {
 	Child *recstruct `rlp:"nil"`
 }
 
+type RawValue []byte
+
+type tailRaw struct {
+	A    uint
+	Tail []RawValue `rlp:"tail"`
+}
+
+type hasIgnoredField struct {
+	A uint
+	B uint `rlp:"-"`
+	C uint
+}
+
 var encTests = []encTest{
 	// booleans
 	{val: true, output: "01"},
