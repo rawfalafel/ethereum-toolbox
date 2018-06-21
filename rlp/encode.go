@@ -55,6 +55,7 @@ type Item struct {
 	itemList   []*Item
 	dataSize   int
 	w          *writer
+	encode
 }
 
 type Encoder interface {
@@ -67,30 +68,31 @@ var (
 	bigIntPtr = reflect.PtrTo(bigInt)
 )
 
+var implementsCache = map[reflect.Type]int{}
+
 func getItem(v interface{}) (*Item, error) {
-	item := &Item{ v: v }
 	var err error = nil
+	var item *Item = nil
 
 	typ := reflect.TypeOf(v)
 	if typ == nil {
-		item.size = 1
-		return item, nil
+		return &Item{ v: v, size: 1 }, nil
 	}
 
 	kind := typ.Kind()
 	switch {
-	case typ.Implements(encoderInterface):
+	case implementsEncoder(typ):
 		item, err = getEncoder(v)
 	case typ.AssignableTo(bigIntPtr):
-		item.size, err = getIntPtr(v.(*big.Int))
+		item, err = getIntPtr(v.(*big.Int))
 	case typ.AssignableTo(bigInt):
-		item.size, err = getInt(v.(big.Int))
+		item, err = getInt(v.(big.Int))
 	case isUint(kind):
 		item = getUint(v)
 	case kind == reflect.String:
 		item, err = getString(v)
 	case kind == reflect.Bool:
-		item.size = getBool()
+		item = getBool(v)
 	case kind == reflect.Slice && isByte(typ.Elem()):
 		item, err = getByteSlice(v)
 	case kind == reflect.Array && isByte(typ.Elem()):
@@ -108,9 +110,22 @@ func getItem(v interface{}) (*Item, error) {
 	return item, err
 }
 
+func implementsEncoder(typ reflect.Type) bool {
+	v := implementsCache[typ]
+	if v == 0 {
+		if typ.Implements(encoderInterface) {
+			v = 2
+		} else {
+			v = 1
+		}
+		implementsCache[typ] = v
+	}
+
+	return v == 2
+}
 
 func getByteArray(v interface{}) (*Item, error) {
-	item := &Item{ v: v }
+	item := &Item{ v: v, encode: encodeByteArray }
 
 	val := reflect.ValueOf(v)
 	len := val.Len()
@@ -133,12 +148,13 @@ func getEncoder(v interface{}) (*Item, error) {
 		return nil, err
 	}
 	item.size = len(item.w.data)
+	item.encode = encodeEncoder
 
 	return item, nil
 }
 
 func getPtr(v interface{}) (*Item, error) {
-	item := &Item{ v: v }
+	item := &Item{ v: v, encode: encodePtr }
 
 	val := reflect.ValueOf(v)
 	if val.IsNil() {
@@ -160,7 +176,7 @@ func getStruct(v interface{}) (*Item, error) {
 
 	len := val.NumField()
 
-	item := &Item{ v: v, itemList: make([]*Item, 0, len) }
+	item := &Item{ v: v, itemList: make([]*Item, 0, len), encode: encodeStruct }
 	for i := 0; i < val.NumField(); i++ {
 		f := val.Field(i)
 		structF := typ.Field(i)
@@ -237,7 +253,7 @@ func getSlice(v interface{}) (*Item, error) {
 	val := reflect.ValueOf(v)
 	len := val.Len()
 
-	item := &Item{  v: v, itemList: make([]*Item, 0, len) }
+	item := &Item{  v: v, itemList: make([]*Item, 0, len), encode: encodeSlice }
 
 	for i := 0; i < len; i++ {
 		arrayItem, err := getItem(val.Index(i).Interface())
@@ -271,7 +287,7 @@ func getListHeaderSize(size int) (int, error) {
 
 func getByteSlice(v interface{}) (*Item, error) {
 	bytes := reflect.ValueOf(v).Bytes()
-	item := &Item{ v: bytes }
+	item := &Item{ v: bytes, encode: encodeByteSlice }
 
 	size, err := getByteHeaderSize(bytes)
 	if err != nil {
@@ -284,7 +300,8 @@ func getByteSlice(v interface{}) (*Item, error) {
 
 func getUint(v interface{}) *Item {
 	vAsUint := reflect.ValueOf(v).Uint()
-	item := &Item{ v: vAsUint }
+	item := &Item{ v: vAsUint, encode: encodeUint }
+
 	if vAsUint < 128 {
 		item.size = 1
 	} else {
@@ -329,32 +346,37 @@ func getBigEndianSize(num uint) int {
 	return int(i)
 }
 
-func getIntPtr(v *big.Int) (int, error) {
+func getIntPtr(v *big.Int) (*Item, error) {
+	item := &Item{ v: v, encode: encodeIntPtr }
+
 	if v == nil {
-		return 1, nil
+		item.size = 1
 	} else if sign := v.Sign(); sign == -1 {
-		return 0, fmt.Errorf("rlp: cannot encode negative *big.Int")
+		return nil, fmt.Errorf("rlp: cannot encode negative *big.Int")
 	} else if sign == 0 {
-		return 1, nil
+		item.size = 1
 	} else {
 		intAsBytes := v.Bytes()
 		byteHeaderSize, err := getByteHeaderSize(intAsBytes)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 
-		return byteHeaderSize + len(intAsBytes), nil
+		item.size = byteHeaderSize + len(intAsBytes)
 	}
 
+	return item, nil
 }
 
-func getInt(v big.Int) (int, error) {
-	return getIntPtr(&v)
+func getInt(v big.Int) (*Item, error) {
+	item, err := getIntPtr(&v)
+	item.encode = encodeInt
+	return item, err
 }
 
 func getString(v interface{}) (*Item, error) {
 	str := reflect.ValueOf(v).String()
-	item := &Item{ v: str }
+	item := &Item{ v: str, encode: encodeString }
 
 	byteHeaderSize, err := getStringHeaderSize(str)
 	if err != nil {
@@ -366,8 +388,8 @@ func getString(v interface{}) (*Item, error) {
 	return item, nil
 }
 
-func getBool() int {
-	return 1
+func getBool(v interface{}) *Item {
+	return &Item{ v: 1, size: 1, encode: encodeString }
 }
 
 func encodeItem(w io.Writer, item *Item) error {
@@ -376,34 +398,10 @@ func encodeItem(w io.Writer, item *Item) error {
 		return writeByte(w, 0xc0)
 	}
 
-	kind := typ.Kind()
-	switch {
-	case typ.Implements(encoderInterface):
-		return encodeEncoder(w, item)
-	case typ.AssignableTo(bigIntPtr):
-		return encodeIntPtr(w, item)
-	case typ.AssignableTo(bigInt):
-		return encodeInt(w, item)
-	case isUint(typ.Kind()):
-		return encodeUint(w, item)
-	case typ.Kind() == reflect.String:
-		return encodeString(w, item)
-	case typ.Kind() == reflect.Bool:
-		return encodeBool(w, item)
-	case kind == reflect.Slice && isByte(typ.Elem()):
-		return encodeByteSlice(w, item)
-	case kind == reflect.Array && isByte(typ.Elem()):
-		return encodeByteArray(w, item)
-	case kind == reflect.Slice || kind == reflect.Array:
-		return encodeSlice(w, item)
-	case kind == reflect.Struct:
-		return encodeStruct(w, item)
-	case kind == reflect.Ptr:
-		return encodePtr(w, item)
-	}
-
-	panic("This should never happen")
+	return item.encode(w, item)
 }
+
+type encode func(w io.Writer, item *Item) error
 
 func encodeByteArray(w io.Writer, item *Item) error {
 	val := reflect.ValueOf(item.v)
