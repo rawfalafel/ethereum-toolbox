@@ -170,33 +170,84 @@ func getPtr(v interface{}) (*Item, error) {
 	return item, nil
 }
 
-func getStruct(v interface{}) (*Item, error) {
-	val := reflect.ValueOf(v)
-	typ := val.Type()
+type tags struct {
+	// rlp:"nil" controls whether empty input results in a nil pointer.
+	nilOK bool
+	// rlp:"tail" controls whether this field swallows additional list
+	// elements. It can only be set for the last field, which must be
+	// of slice type.
+	tail bool
+	// rlp:"-" ignores fields.
+	ignored bool
+}
 
+type fieldInfo struct {
+	name     string
+	exported bool
+	tags     tags
+}
+
+var structCache = map[reflect.Type][]*fieldInfo{}
+
+func getFieldInfo(typ reflect.Type, val reflect.Value) ([]*fieldInfo, error) {
+	var err error
+	fs := structCache[typ]
+	if fs == nil {
+		fs, err = getFieldInfo1(typ, val)
+		if err != nil {
+			return nil, err
+		}
+		structCache[typ] = fs
+	}
+
+	return fs, nil
+}
+
+func getFieldInfo1(typ reflect.Type, val reflect.Value) ([]*fieldInfo, error) {
 	len := val.NumField()
 
-	item := &Item{ v: v, itemList: make([]*Item, 0, len), encode: encodeStruct }
-	for i := 0; i < val.NumField(); i++ {
-		f := val.Field(i)
+	fs := make([]*fieldInfo, 0, len)
+	for i := 0; i < len; i++ {
 		structF := typ.Field(i)
-
-		// ignore unexported fields
-		if structF.PkgPath != "" {
-			continue
-		}
 
 		tags, err := parseStructTag(typ, i)
 		if err != nil {
 			return nil, err
 		}
-		if tags.ignored {
+
+		f := &fieldInfo{ name: structF.Name, exported: structF.PkgPath == "", tags: tags }
+		fs = append(fs, f)
+	}
+
+	return fs, nil
+}
+
+func getStruct(v interface{}) (*Item, error) {
+	val := reflect.ValueOf(v)
+	typ := val.Type()
+
+	fs, err := getFieldInfo(typ, val)
+	if err != nil {
+		return nil, err
+	}
+
+	len := len(fs)
+	item := &Item{ v: v, itemList: make([]*Item, 0, len), encode: encodeStruct }
+	for i := 0; i < len; i++ {
+		f := val.Field(i)
+
+		// ignore unexported fields
+		if !fs[i].exported {
+			continue
+		}
+
+		if fs[i].tags.ignored {
 			continue
 		}
 
 		arrayItem, err := getItem(f.Interface())
 		if err != nil {
-			return nil, fmt.Errorf("cannot encode struct %v: %v", structF.Name, err)
+			return nil, fmt.Errorf("cannot encode struct %v: %v", fs[i].name, err)
 		}
 
 		item.itemList = append(item.itemList, arrayItem)
@@ -211,17 +262,6 @@ func getStruct(v interface{}) (*Item, error) {
 	item.size = item.dataSize + listHeaderSize
 
 	return item, nil
-}
-
-type tags struct {
-	// rlp:"nil" controls whether empty input results in a nil pointer.
-	nilOK bool
-	// rlp:"tail" controls whether this field swallows additional list
-	// elements. It can only be set for the last field, which must be
-	// of slice type.
-	tail bool
-	// rlp:"-" ignores fields.
-	ignored bool
 }
 
 func parseStructTag(typ reflect.Type, fi int) (tags, error) {
@@ -389,7 +429,7 @@ func getString(v interface{}) (*Item, error) {
 }
 
 func getBool(v interface{}) *Item {
-	return &Item{ v: 1, size: 1, encode: encodeString }
+	return &Item{ v: 1, size: 1, encode: encodeBool }
 }
 
 func encodeItem(w io.Writer, item *Item) error {
