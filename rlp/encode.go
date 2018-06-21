@@ -154,12 +154,9 @@ func getEncoder(v interface{}) (*Item, error) {
 }
 
 func getPtr(v interface{}) (*Item, error) {
-	item := &Item{ v: v, encode: encodePtr }
-
 	val := reflect.ValueOf(v)
 	if val.IsNil() {
-		item.size = 1
-		return item, nil
+		return &Item{ v: v, encode: encodePtr }, nil
 	}
 
 	item, err := getItem(val.Elem().Interface())
@@ -222,48 +219,6 @@ func getFieldInfo1(typ reflect.Type, val reflect.Value) ([]*fieldInfo, error) {
 	return fs, nil
 }
 
-func getStruct(v interface{}) (*Item, error) {
-	val := reflect.ValueOf(v)
-	typ := val.Type()
-
-	fs, err := getFieldInfo(typ, val)
-	if err != nil {
-		return nil, err
-	}
-
-	len := len(fs)
-	item := &Item{ v: v, itemList: make([]*Item, 0, len), encode: encodeStruct }
-	for i := 0; i < len; i++ {
-		f := val.Field(i)
-
-		// ignore unexported fields
-		if !fs[i].exported {
-			continue
-		}
-
-		if fs[i].tags.ignored {
-			continue
-		}
-
-		arrayItem, err := getItem(f.Interface())
-		if err != nil {
-			return nil, fmt.Errorf("cannot encode struct %v: %v", fs[i].name, err)
-		}
-
-		item.itemList = append(item.itemList, arrayItem)
-		item.dataSize += arrayItem.size
-	}
-
-	listHeaderSize, err := getListHeaderSize(item.dataSize)
-	if err != nil {
-		return nil, fmt.Errorf("cannot encode struct: %v", err)
-	}
-
-	item.size = item.dataSize + listHeaderSize
-
-	return item, nil
-}
-
 func parseStructTag(typ reflect.Type, fi int) (tags, error) {
 	f := typ.Field(fi)
 	var ts tags
@@ -308,6 +263,48 @@ func getSlice(v interface{}) (*Item, error) {
 	listHeaderSize, err := getListHeaderSize(item.dataSize)
 	if err != nil {
 		return nil, err
+	}
+
+	item.size = item.dataSize + listHeaderSize
+
+	return item, nil
+}
+
+func getStruct(v interface{}) (*Item, error) {
+	val := reflect.ValueOf(v)
+	typ := val.Type()
+
+	fs, err := getFieldInfo(typ, val)
+	if err != nil {
+		return nil, err
+	}
+
+	len := len(fs)
+	item := &Item{ v: v, itemList: make([]*Item, 0, len), encode: encodeStruct }
+	for i := 0; i < len; i++ {
+		f := val.Field(i)
+
+		// ignore unexported fields
+		if !fs[i].exported {
+			continue
+		}
+
+		if fs[i].tags.ignored {
+			continue
+		}
+
+		arrayItem, err := getItem(f.Interface())
+		if err != nil {
+			return nil, fmt.Errorf("cannot encode struct %v: %v", fs[i].name, err)
+		}
+
+		item.itemList = append(item.itemList, arrayItem)
+		item.dataSize += arrayItem.size
+	}
+
+	listHeaderSize, err := getListHeaderSize(item.dataSize)
+	if err != nil {
+		return nil, fmt.Errorf("cannot encode struct: %v", err)
 	}
 
 	item.size = item.dataSize + listHeaderSize
@@ -415,6 +412,7 @@ func getInt(v big.Int) (*Item, error) {
 }
 
 func getString(v interface{}) (*Item, error) {
+	// TODO: avoid creating a string object
 	str := reflect.ValueOf(v).String()
 	item := &Item{ v: str, encode: encodeString }
 
