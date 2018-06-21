@@ -64,6 +64,7 @@ type Encoder interface {
 var (
 	encoderInterface = reflect.TypeOf(new(Encoder)).Elem()
 	bigInt = reflect.TypeOf(big.Int{})
+	bigIntPtr = reflect.PtrTo(bigInt)
 )
 
 func getItem(v interface{}) (*Item, error) {
@@ -80,7 +81,7 @@ func getItem(v interface{}) (*Item, error) {
 	switch {
 	case typ.Implements(encoderInterface):
 		item, err = getEncoder(v)
-	case typ.AssignableTo(reflect.PtrTo(bigInt)):
+	case typ.AssignableTo(bigIntPtr):
 		item.size, err = getIntPtr(v.(*big.Int))
 	case typ.AssignableTo(bigInt):
 		item.size, err = getInt(v.(big.Int))
@@ -94,14 +95,14 @@ func getItem(v interface{}) (*Item, error) {
 		item, err = getByteSlice(v)
 	case kind == reflect.Array && isByte(typ.Elem()):
 		item, err = getByteArray(v)
-	case kind == reflect.Slice:
+	case kind == reflect.Slice || kind == reflect.Array:
 		item, err = getSlice(v)
 	case kind == reflect.Struct:
 		item, err = getStruct(v)
 	case kind == reflect.Ptr:
 		item, err = getPtr(v)
 	default:
-		return nil, fmt.Errorf("rlp: unsupported item type")
+		return nil, fmt.Errorf("rlp: unsupported item type: %v", kind)
 	}
 
 	return item, err
@@ -379,7 +380,7 @@ func encodeItem(w io.Writer, item *Item) error {
 	switch {
 	case typ.Implements(encoderInterface):
 		return encodeEncoder(w, item)
-	case typ.AssignableTo(reflect.PtrTo(bigInt)):
+	case typ.AssignableTo(bigIntPtr):
 		return encodeIntPtr(w, item)
 	case typ.AssignableTo(bigInt):
 		return encodeInt(w, item)
@@ -393,9 +394,8 @@ func encodeItem(w io.Writer, item *Item) error {
 		return encodeByteSlice(w, item)
 	case kind == reflect.Array && isByte(typ.Elem()):
 		return encodeByteArray(w, item)
-	case kind == reflect.Slice:
+	case kind == reflect.Slice || kind == reflect.Array:
 		return encodeSlice(w, item)
-	case kind == reflect.Array:
 	case kind == reflect.Struct:
 		return encodeStruct(w, item)
 	case kind == reflect.Ptr:
