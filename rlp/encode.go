@@ -21,12 +21,32 @@ func EncodeToBytes(v interface{}) ([]byte, error) {
 	}
 
 	bs := make([]byte, 0, siz)
-	return i.w(val, bs), nil
+	bs = i.w(val, bs)
+
+	if len(bs) != siz {
+		return nil, fmt.Errorf("Size doesn't match: %d but should be %d", len(bs), siz)
+	}
+
+	return bs, nil
 }
 
 // func Encode(w io.Writer, v interface{}) error {
 // 	// IMPLEMENT
 // }
+
+var infoCache = map[reflect.Type]*encodeInfo{}
+
+func getInfo(typ reflect.Type) *encodeInfo {
+	ei, ok := infoCache[typ]
+
+	if !ok {
+		ei = &encodeInfo{}
+		ei.populate(typ)
+		infoCache[typ] = ei
+	}
+
+	return ei
+}
 
 type writerz struct {
 	data []byte
@@ -48,6 +68,24 @@ type encodeInfo struct {
 	typ reflect.Type
 	s   sizer
 	w   writer
+}
+
+func (ei *encodeInfo) populate(typ reflect.Type) {
+	ei.typ = typ
+	if typ == nil {
+		ei.s, ei.w = nilSizer, nilWriter
+		return
+	}
+
+	switch {
+	case typ.Implements(encoderInterface):
+		ei.s, ei.w = makeEncoderSizer(typ), makeEncoderWriter(typ)
+	case typ.Kind() == reflect.String:
+		ei.s, ei.w = stringSizer, stringWriter
+	case typ.Kind() == reflect.Struct:
+		s, w, _ := makeStructFuncs(typ)
+		ei.s, ei.w = s, w
+	}
 }
 
 func nilSizer(_ reflect.Value) (int, error) {
@@ -83,12 +121,8 @@ func makeEncoderWriter(typ reflect.Type) writer {
 }
 
 func stringSizer(v reflect.Value) (int, error) {
-	// TODO: avoid creating a string object
-	// str := v.String()
-
-	// byteHeaderSize, err := getStringHeaderSize(str)
-	str := v.Bytes()
-	byteHeaderSize, err := getByteHeaderSize(str)
+	str := v.String()
+	byteHeaderSize, err := getStringHeaderSize(str)
 	if err != nil {
 		return 0, err
 	}
@@ -97,16 +131,16 @@ func stringSizer(v reflect.Value) (int, error) {
 }
 
 func stringWriter(v reflect.Value, b []byte) []byte {
-	str := v.Bytes()
+	str := v.String()
 	if len(str) == 1 {
-		return append(b, str[0])
+		return encodeByte(b, str[0])
 	}
 
-	if err := encodeByteHeader(b, len(str)); err != nil {
-		panic(fmt.Sprintf("EncodeRLP of string failed: %v", err))
-	}
+	b = encodeByteHeader(b, len(str))
 	return append(b, str...)
 }
+
+var sizeCache = map[reflect.Value]int{}
 
 func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 	fs, err := getFieldInfo(typ)
@@ -130,16 +164,26 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 
 			fsiz, err := fs[i].s(f)
 			if err != nil {
-				return 0, fmt.Errorf("error with %v: %v", fs[i].name)
+				return 0, fmt.Errorf("error with %v: %v", fs[i].name, err)
 			}
 
 			siz += fsiz
 		}
 
-		return siz, nil
+		sizeCache[v] = siz
+
+		headerSize, err := getListHeaderSize(siz)
+		if err != nil {
+			return 0, err
+		}
+
+		return siz + headerSize, nil
 	}, 
 	func(v reflect.Value, b []byte) []byte {
-		// TODO: Write list header based on size
+		siz := sizeCache[v] 
+		delete(sizeCache, v)
+
+		b = encodeListHeader(b, siz)
 		for i := 0; i < len(fs); i++ {
 			f := v.Field(i)
 
@@ -158,36 +202,6 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 		return b
 	},
 	nil
-}
-
-func (ei *encodeInfo) populate(typ reflect.Type) {
-	if typ == nil {
-		ei.s, ei.w = nilSizer, nilWriter
-		return
-	}
-
-	switch {
-	case typ.Implements(encoderInterface):
-		ei.s, ei.w = makeEncoderSizer(typ), makeEncoderWriter(typ)
-	case typ.Kind() == reflect.String:
-		ei.s, ei.w = stringSizer, stringWriter
-	case typ.Kind() == reflect.Struct:
-		s, w, _ := makeStructFuncs(typ)
-		ei.s, ei.w = s, w
-	}
-}
-
-var infoCache = map[reflect.Type]*encodeInfo{}
-
-func getInfo(typ reflect.Type) *encodeInfo {
-	ei, ok := infoCache[typ]
-
-	if !ok {
-		ei = &encodeInfo{typ: typ}
-		infoCache[typ] = ei
-	}
-
-	return ei
 }
 
 // Encoder ...
@@ -331,7 +345,7 @@ func getFieldInfo(typ reflect.Type) ([]*fieldInfo, error) {
 			return nil, err
 		}
 
-		ei := getInfo(typ)
+		ei := getInfo(structF.Type)
 		f := &fieldInfo{name: structF.Name, exported: structF.PkgPath == "", tags: tags, s: ei.s, w: ei.w}
 		fs = append(fs, f)
 	}
@@ -432,15 +446,15 @@ func parseStructTag(typ reflect.Type, fi int) (tags, error) {
 // 	return item, nil
 // }
 
-// func getListHeaderSize(size int) (int, error) {
-// 	if size < 56 {
-// 		return 1, nil
-// 	} else if encodedSize := getBigEndianSize(uint(size)); encodedSize > 9 {
-// 		return 0, fmt.Errorf("encoding size exceeded limit: %d bytes long", size)
-// 	} else {
-// 		return encodedSize + 1, nil
-// 	}
-// }
+func getListHeaderSize(size int) (int, error) {
+	if size < 56 {
+		return 1, nil
+	} else if encodedSize := getBigEndianSize(uint(size)); encodedSize > 9 {
+		return 0, fmt.Errorf("encoding size exceeded limit: %d bytes long", size)
+	} else {
+		return encodedSize + 1, nil
+	}
+}
 
 // func getByteSlice(v interface{}) (*Item, error) {
 // 	bytes := reflect.ValueOf(v).Bytes()
