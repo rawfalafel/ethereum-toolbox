@@ -1,171 +1,304 @@
 package rlp
 
 import (
-	"reflect"
-	"math/big"
 	"fmt"
 	"io"
+	"math/big"
+	"reflect"
 	"strings"
 )
 
-type writer struct {
+// EncodeToBytes ...
+func EncodeToBytes(v interface{}) ([]byte, error) {
+	val := reflect.ValueOf(v)
+	typ := val.Type()
+
+	i := getInfo(typ)
+
+	siz, err := i.s(val)
+	if err != nil {
+		return nil, fmt.Errorf("Sizing failed: %v", err)
+	}
+
+	bs := make([]byte, 0, siz)
+	return i.w(val, bs), nil
+}
+
+// func Encode(w io.Writer, v interface{}) error {
+// 	// IMPLEMENT
+// }
+
+type writerz struct {
 	data []byte
 }
 
-func newWriter(size int) *writer {
-	return &writer{ make([]byte, 0, size) }
+func newWriter(size int) *writerz {
+	return &writerz{make([]byte, 0, size)}
 }
 
-func (w *writer) Write(p []byte) (int, error) {
+func (w *writerz) Write(p []byte) (int, error) {
 	w.data = append(w.data, p...)
 	return len(p), nil
 }
 
-func EncodeToBytes(v interface{}) ([]byte, error) {
-	// Before marshaling, determine the length of the final array
-	item, err := getItem(v)
+type sizer func(reflect.Value) (int, error)
+type writer func(reflect.Value, []byte) []byte
+
+type encodeInfo struct {
+	typ reflect.Type
+	s   sizer
+	w   writer
+}
+
+func nilSizer(_ reflect.Value) (int, error) {
+	return 1, nil
+}
+
+func nilWriter(_ reflect.Value, b []byte) []byte {
+	return append(b, 0xc0)
+}
+
+func makeEncoderSizer(typ reflect.Type) sizer {
+	return func(v reflect.Value) (int, error) {
+		wz := newWriter(0)
+		// Can this be the pointer to avoid unnecessary copy?
+		if err := v.Interface().(Encoder).EncodeRLP(wz); err != nil {
+			return 0, err
+		}
+
+		return len(wz.data), nil
+	}
+}
+
+func makeEncoderWriter(typ reflect.Type) writer {
+	return func(v reflect.Value, b []byte) []byte {
+		wz := newWriter(0)
+
+		if err := v.Interface().(Encoder).EncodeRLP(wz); err != nil {
+			panic(fmt.Sprintf("EncodeRLP of encoder object failed: %v", err))
+		}
+
+		return append(b, wz.data...)
+	}
+}
+
+func stringSizer(v reflect.Value) (int, error) {
+	// TODO: avoid creating a string object
+	// str := v.String()
+
+	// byteHeaderSize, err := getStringHeaderSize(str)
+	str := v.Bytes()
+	byteHeaderSize, err := getByteHeaderSize(str)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	w := newWriter(item.size)
-	if err = encodeItem(w, item); err != nil {
-		return nil, err
-	}
-
-	if len(w.data) != item.size {
-		return nil, fmt.Errorf("final array should be %d bytes not %d", item.size, len(w.data))
-	}
-
-	return w.data, nil
+	return byteHeaderSize + len(str), nil
 }
 
-func Encode(w io.Writer, v interface{}) error {
-	item, err := getItem(v)
+func stringWriter(v reflect.Value, b []byte) []byte {
+	str := v.Bytes()
+	if len(str) == 1 {
+		return append(b, str[0])
+	}
+
+	if err := encodeByteHeader(b, len(str)); err != nil {
+		panic(fmt.Sprintf("EncodeRLP of string failed: %v", err))
+	}
+	return append(b, str...)
+}
+
+func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
+	fs, err := getFieldInfo(typ)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	return encodeItem(w, item)
+	return func(v reflect.Value) (int, error) {
+		siz := 0
+		for i := 0; i < len(fs); i++ {
+			f := v.Field(i)
+
+			// ignore unexported fields
+			if !fs[i].exported {
+				continue
+			}
+
+			if fs[i].tags.ignored {
+				continue
+			}
+
+			fsiz, err := fs[i].s(f)
+			if err != nil {
+				return 0, fmt.Errorf("error with %v: %v", fs[i].name)
+			}
+
+			siz += fsiz
+		}
+
+		return siz, nil
+	}, 
+	func(v reflect.Value, b []byte) []byte {
+		// TODO: Write list header based on size
+		for i := 0; i < len(fs); i++ {
+			f := v.Field(i)
+
+			// ignore unexported fields
+			if !fs[i].exported {
+				continue
+			}
+
+			if fs[i].tags.ignored {
+				continue
+			}
+
+			b = fs[i].w(f, b)
+		}
+
+		return b
+	},
+	nil
 }
 
-type Item struct {
-	size       int
-	v          interface{}
-	itemList   []*Item
-	dataSize   int
-	w          *writer
-	encode
+func (ei *encodeInfo) populate(typ reflect.Type) {
+	if typ == nil {
+		ei.s, ei.w = nilSizer, nilWriter
+		return
+	}
+
+	switch {
+	case typ.Implements(encoderInterface):
+		ei.s, ei.w = makeEncoderSizer(typ), makeEncoderWriter(typ)
+	case typ.Kind() == reflect.String:
+		ei.s, ei.w = stringSizer, stringWriter
+	case typ.Kind() == reflect.Struct:
+		s, w, _ := makeStructFuncs(typ)
+		ei.s, ei.w = s, w
+	}
 }
 
+var infoCache = map[reflect.Type]*encodeInfo{}
+
+func getInfo(typ reflect.Type) *encodeInfo {
+	ei, ok := infoCache[typ]
+
+	if !ok {
+		ei = &encodeInfo{typ: typ}
+		infoCache[typ] = ei
+	}
+
+	return ei
+}
+
+// Encoder ...
 type Encoder interface {
 	EncodeRLP(io.Writer) error
 }
 
 var (
 	encoderInterface = reflect.TypeOf(new(Encoder)).Elem()
-	bigInt = reflect.TypeOf(big.Int{})
-	bigIntPtr = reflect.PtrTo(bigInt)
+	bigInt           = reflect.TypeOf(big.Int{})
+	bigIntPtr        = reflect.PtrTo(bigInt)
 )
 
-var implementsCache = map[reflect.Type]int{}
+// var implementsCache = map[reflect.Type]int{}
 
-func getItem(v interface{}) (*Item, error) {
-	var err error = nil
-	var item *Item = nil
+// func getItem(v interface{}) (*Item, error) {
+// 	var err error = nil
+// 	var item *Item = nil
 
-	typ := reflect.TypeOf(v)
-	if typ == nil {
-		return &Item{ v: v, size: 1 }, nil
-	}
+// 	typ := reflect.TypeOf(v)
+// 	if typ == nil {
+// 		return &Item{v: v, size: 1}, nil
+// 	}
 
-	kind := typ.Kind()
-	switch {
-	case implementsEncoder(typ):
-		item, err = getEncoder(v)
-	case typ.AssignableTo(bigIntPtr):
-		item, err = getIntPtr(v.(*big.Int))
-	case typ.AssignableTo(bigInt):
-		item, err = getInt(v.(big.Int))
-	case isUint(kind):
-		item = getUint(v)
-	case kind == reflect.String:
-		item, err = getString(v)
-	case kind == reflect.Bool:
-		item = getBool(v)
-	case kind == reflect.Slice && isByte(typ.Elem()):
-		item, err = getByteSlice(v)
-	case kind == reflect.Array && isByte(typ.Elem()):
-		item, err = getByteArray(v)
-	case kind == reflect.Slice || kind == reflect.Array:
-		item, err = getSlice(v)
-	case kind == reflect.Struct:
-		item, err = getStruct(v)
-	case kind == reflect.Ptr:
-		item, err = getPtr(v)
-	default:
-		return nil, fmt.Errorf("rlp: unsupported item type: %v", kind)
-	}
+// 	kind := typ.Kind()
+// 	switch {
+// 	case implementsEncoder(typ):
+// 		item, err = getEncoder(v)
+// 	case typ.AssignableTo(bigIntPtr):
+// 		item, err = getIntPtr(v.(*big.Int))
+// 	case typ.AssignableTo(bigInt):
+// 		item, err = getInt(v.(big.Int))
+// 	case isUint(kind):
+// 		item = getUint(v)
+// 	case kind == reflect.String:
+// 		item, err = getString(v)
+// 	case kind == reflect.Bool:
+// 		item = getBool(v)
+// 	case kind == reflect.Slice && isByte(typ.Elem()):
+// 		item, err = getByteSlice(v)
+// 	case kind == reflect.Array && isByte(typ.Elem()):
+// 		item, err = getByteArray(v)
+// 	case kind == reflect.Slice || kind == reflect.Array:
+// 		item, err = getSlice(v)
+// 	case kind == reflect.Struct:
+// 		item, err = getStruct(v)
+// 	case kind == reflect.Ptr:
+// 		item, err = getPtr(v)
+// 	default:
+// 		return nil, fmt.Errorf("rlp: unsupported item type: %v", kind)
+// 	}
 
-	return item, err
-}
+// 	return item, err
+// }
 
-func implementsEncoder(typ reflect.Type) bool {
-	v := implementsCache[typ]
-	if v == 0 {
-		if typ.Implements(encoderInterface) {
-			v = 2
-		} else {
-			v = 1
-		}
-		implementsCache[typ] = v
-	}
+// func implementsEncoder(typ reflect.Type) bool {
+// 	v := implementsCache[typ]
+// 	if v == 0 {
+// 		if typ.Implements(encoderInterface) {
+// 			v = 2
+// 		} else {
+// 			v = 1
+// 		}
+// 		implementsCache[typ] = v
+// 	}
 
-	return v == 2
-}
+// 	return v == 2
+// }
 
-func getByteArray(v interface{}) (*Item, error) {
-	item := &Item{ v: v, encode: encodeByteArray }
+// func getByteArray(v interface{}) (*Item, error) {
+// 	item := &Item{v: v, encode: encodeByteArray}
 
-	val := reflect.ValueOf(v)
-	len := val.Len()
-	if len == 0 && val.Index(0).Interface().(byte) <= 0x7F {
-		item.size = 1
-	} else if len < 56 {
-		item.size = 1 + len
-	} else if encodedSize := getBigEndianSize(uint(len)); encodedSize > 9 {
-		return nil, fmt.Errorf("encoding size exceeded limit: %d bytes long", len)
-	} else {
-		item.size = 1 + encodedSize + len
-	}
+// 	val := reflect.ValueOf(v)
+// 	len := val.Len()
+// 	if len == 0 && val.Index(0).Interface().(byte) <= 0x7F {
+// 		item.size = 1
+// 	} else if len < 56 {
+// 		item.size = 1 + len
+// 	} else if encodedSize := getBigEndianSize(uint(len)); encodedSize > 9 {
+// 		return nil, fmt.Errorf("encoding size exceeded limit: %d bytes long", len)
+// 	} else {
+// 		item.size = 1 + encodedSize + len
+// 	}
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
-func getEncoder(v interface{}) (*Item, error) {
-	item := &Item{ v: v, w: newWriter(0) }
-	if err := v.(Encoder).EncodeRLP(item.w); err != nil {
-		return nil, err
-	}
-	item.size = len(item.w.data)
-	item.encode = encodeEncoder
+// func getEncoder(v interface{}) (*Item, error) {
+// 	item := &Item{v: v, w: newWriter(0)}
+// 	if err := v.(Encoder).EncodeRLP(item.w); err != nil {
+// 		return nil, err
+// 	}
+// 	item.size = len(item.w.data)
+// 	item.encode = encodeEncoder
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
-func getPtr(v interface{}) (*Item, error) {
-	val := reflect.ValueOf(v)
-	if val.IsNil() {
-		return &Item{ v: v, encode: encodePtr }, nil
-	}
+// func getPtr(v interface{}) (*Item, error) {
+// 	val := reflect.ValueOf(v)
+// 	if val.IsNil() {
+// 		return &Item{v: v, encode: encodePtr}, nil
+// 	}
 
-	item, err := getItem(val.Elem().Interface())
-	if err != nil {
-		return nil, fmt.Errorf("cannot encode pointer: %v", err)
-	}
+// 	item, err := getItem(val.Elem().Interface())
+// 	if err != nil {
+// 		return nil, fmt.Errorf("cannot encode pointer: %v", err)
+// 	}
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
 type tags struct {
 	// rlp:"nil" controls whether empty input results in a nil pointer.
@@ -182,26 +315,12 @@ type fieldInfo struct {
 	name     string
 	exported bool
 	tags     tags
+	s        sizer
+	w        writer
 }
 
-var structCache = map[reflect.Type][]*fieldInfo{}
-
-func getFieldInfo(typ reflect.Type, val reflect.Value) ([]*fieldInfo, error) {
-	var err error
-	fs := structCache[typ]
-	if fs == nil {
-		fs, err = getFieldInfo1(typ, val)
-		if err != nil {
-			return nil, err
-		}
-		structCache[typ] = fs
-	}
-
-	return fs, nil
-}
-
-func getFieldInfo1(typ reflect.Type, val reflect.Value) ([]*fieldInfo, error) {
-	len := val.NumField()
+func getFieldInfo(typ reflect.Type) ([]*fieldInfo, error) {
+	len := typ.NumField()
 
 	fs := make([]*fieldInfo, 0, len)
 	for i := 0; i < len; i++ {
@@ -212,7 +331,8 @@ func getFieldInfo1(typ reflect.Type, val reflect.Value) ([]*fieldInfo, error) {
 			return nil, err
 		}
 
-		f := &fieldInfo{ name: structF.Name, exported: structF.PkgPath == "", tags: tags }
+		ei := getInfo(typ)
+		f := &fieldInfo{name: structF.Name, exported: structF.PkgPath == "", tags: tags, s: ei.s, w: ei.w}
 		fs = append(fs, f)
 	}
 
@@ -244,109 +364,109 @@ func parseStructTag(typ reflect.Type, fi int) (tags, error) {
 	return ts, nil
 }
 
-func getSlice(v interface{}) (*Item, error) {
-	val := reflect.ValueOf(v)
-	len := val.Len()
+// func getSlice(v interface{}) (*Item, error) {
+// 	val := reflect.ValueOf(v)
+// 	len := val.Len()
 
-	item := &Item{  v: v, itemList: make([]*Item, 0, len), encode: encodeSlice }
+// 	item := &Item{v: v, itemList: make([]*Item, 0, len), encode: encodeSlice}
 
-	for i := 0; i < len; i++ {
-		arrayItem, err := getItem(val.Index(i).Interface())
-		if err != nil {
-			return nil, fmt.Errorf("err at index %d: %v", i, err)
-		}
+// 	for i := 0; i < len; i++ {
+// 		arrayItem, err := getItem(val.Index(i).Interface())
+// 		if err != nil {
+// 			return nil, fmt.Errorf("err at index %d: %v", i, err)
+// 		}
 
-		item.dataSize += arrayItem.size
-		item.itemList = append(item.itemList, arrayItem)
-	}
+// 		item.dataSize += arrayItem.size
+// 		item.itemList = append(item.itemList, arrayItem)
+// 	}
 
-	listHeaderSize, err := getListHeaderSize(item.dataSize)
-	if err != nil {
-		return nil, err
-	}
+// 	listHeaderSize, err := getListHeaderSize(item.dataSize)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	item.size = item.dataSize + listHeaderSize
+// 	item.size = item.dataSize + listHeaderSize
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
-func getStruct(v interface{}) (*Item, error) {
-	val := reflect.ValueOf(v)
-	typ := val.Type()
+// func getStruct(v interface{}) (*Item, error) {
+// 	val := reflect.ValueOf(v)
+// 	typ := val.Type()
 
-	fs, err := getFieldInfo(typ, val)
-	if err != nil {
-		return nil, err
-	}
+// 	fs, err := getFieldInfo(typ, val)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	len := len(fs)
-	item := &Item{ v: v, itemList: make([]*Item, 0, len), encode: encodeStruct }
-	for i := 0; i < len; i++ {
-		f := val.Field(i)
+// 	len := len(fs)
+// 	item := &Item{v: v, itemList: make([]*Item, 0, len), encode: encodeStruct}
+// 	for i := 0; i < len; i++ {
+// 		f := val.Field(i)
 
-		// ignore unexported fields
-		if !fs[i].exported {
-			continue
-		}
+// 		// ignore unexported fields
+// 		if !fs[i].exported {
+// 			continue
+// 		}
 
-		if fs[i].tags.ignored {
-			continue
-		}
+// 		if fs[i].tags.ignored {
+// 			continue
+// 		}
 
-		arrayItem, err := getItem(f.Interface())
-		if err != nil {
-			return nil, fmt.Errorf("cannot encode struct %v: %v", fs[i].name, err)
-		}
+// 		arrayItem, err := getItem(f.Interface())
+// 		if err != nil {
+// 			return nil, fmt.Errorf("cannot encode struct %v: %v", fs[i].name, err)
+// 		}
 
-		item.itemList = append(item.itemList, arrayItem)
-		item.dataSize += arrayItem.size
-	}
+// 		item.itemList = append(item.itemList, arrayItem)
+// 		item.dataSize += arrayItem.size
+// 	}
 
-	listHeaderSize, err := getListHeaderSize(item.dataSize)
-	if err != nil {
-		return nil, fmt.Errorf("cannot encode struct: %v", err)
-	}
+// 	listHeaderSize, err := getListHeaderSize(item.dataSize)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("cannot encode struct: %v", err)
+// 	}
 
-	item.size = item.dataSize + listHeaderSize
+// 	item.size = item.dataSize + listHeaderSize
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
-func getListHeaderSize(size int) (int, error) {
-	if size < 56 {
-		return 1, nil
-	} else if encodedSize := getBigEndianSize(uint(size)); encodedSize > 9 {
-		return 0, fmt.Errorf("encoding size exceeded limit: %d bytes long", size)
-	} else {
-		return encodedSize + 1, nil
-	}
-}
+// func getListHeaderSize(size int) (int, error) {
+// 	if size < 56 {
+// 		return 1, nil
+// 	} else if encodedSize := getBigEndianSize(uint(size)); encodedSize > 9 {
+// 		return 0, fmt.Errorf("encoding size exceeded limit: %d bytes long", size)
+// 	} else {
+// 		return encodedSize + 1, nil
+// 	}
+// }
 
-func getByteSlice(v interface{}) (*Item, error) {
-	bytes := reflect.ValueOf(v).Bytes()
-	item := &Item{ v: bytes, encode: encodeByteSlice }
+// func getByteSlice(v interface{}) (*Item, error) {
+// 	bytes := reflect.ValueOf(v).Bytes()
+// 	item := &Item{v: bytes, encode: encodeByteSlice}
 
-	size, err := getByteHeaderSize(bytes)
-	if err != nil {
-		return nil, err
-	}
+// 	size, err := getByteHeaderSize(bytes)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	item.size = size + len(bytes)
-	return item, nil
-}
+// 	item.size = size + len(bytes)
+// 	return item, nil
+// }
 
-func getUint(v interface{}) *Item {
-	vAsUint := reflect.ValueOf(v).Uint()
-	item := &Item{ v: vAsUint, encode: encodeUint }
+// func getUint(v interface{}) *Item {
+// 	vAsUint := reflect.ValueOf(v).Uint()
+// 	item := &Item{v: vAsUint, encode: encodeUint}
 
-	if vAsUint < 128 {
-		item.size = 1
-	} else {
-		item.size = getBigEndianSize(uint(vAsUint)) + 1
-	}
+// 	if vAsUint < 128 {
+// 		item.size = 1
+// 	} else {
+// 		item.size = getBigEndianSize(uint(vAsUint)) + 1
+// 	}
 
-	return item
-}
+// 	return item
+// }
 
 func getStringHeaderSize(data string) (int, error) {
 	size := len(data)
@@ -383,244 +503,227 @@ func getBigEndianSize(num uint) int {
 	return int(i)
 }
 
-func getIntPtr(v *big.Int) (*Item, error) {
-	item := &Item{ v: v, encode: encodeIntPtr }
+// func getIntPtr(v *big.Int) (*Item, error) {
+// 	item := &Item{v: v, encode: encodeIntPtr}
 
-	if v == nil {
-		item.size = 1
-	} else if sign := v.Sign(); sign == -1 {
-		return nil, fmt.Errorf("rlp: cannot encode negative *big.Int")
-	} else if sign == 0 {
-		item.size = 1
-	} else {
-		intAsBytes := v.Bytes()
-		byteHeaderSize, err := getByteHeaderSize(intAsBytes)
-		if err != nil {
-			return nil, err
-		}
+// 	if v == nil {
+// 		item.size = 1
+// 	} else if sign := v.Sign(); sign == -1 {
+// 		return nil, fmt.Errorf("rlp: cannot encode negative *big.Int")
+// 	} else if sign == 0 {
+// 		item.size = 1
+// 	} else {
+// 		intAsBytes := v.Bytes()
+// 		byteHeaderSize, err := getByteHeaderSize(intAsBytes)
+// 		if err != nil {
+// 			return nil, err
+// 		}
 
-		item.size = byteHeaderSize + len(intAsBytes)
-	}
+// 		item.size = byteHeaderSize + len(intAsBytes)
+// 	}
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
-func getInt(v big.Int) (*Item, error) {
-	item, err := getIntPtr(&v)
-	item.encode = encodeInt
-	return item, err
-}
+// func getInt(v big.Int) (*Item, error) {
+// 	item, err := getIntPtr(&v)
+// 	item.encode = encodeInt
+// 	return item, err
+// }
 
-func getString(v interface{}) (*Item, error) {
-	// TODO: avoid creating a string object
-	str := reflect.ValueOf(v).String()
-	item := &Item{ v: str, encode: encodeString }
+// func getString(v interface{}) (*Item, error) {
+// 	// TODO: avoid creating a string object
+// 	str := reflect.ValueOf(v).String()
+// 	item := &Item{v: str, encode: encodeString}
 
-	byteHeaderSize, err := getStringHeaderSize(str)
-	if err != nil {
-		return nil, err
-	}
+// 	byteHeaderSize, err := getStringHeaderSize(str)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	item.size = byteHeaderSize + len(str)
+// 	item.size = byteHeaderSize + len(str)
 
-	return item, nil
-}
+// 	return item, nil
+// }
 
-func getBool(v interface{}) *Item {
-	return &Item{ v: 1, size: 1, encode: encodeBool }
-}
+// func getBool(v interface{}) *Item {
+// 	return &Item{v: 1, size: 1, encode: encodeBool}
+// }
 
-func encodeItem(w io.Writer, item *Item) error {
-	typ := reflect.TypeOf(item.v)
-	if typ == nil {
-		return writeByte(w, 0xc0)
-	}
+// func encodeItem(w io.Writer, item *Item) error {
+// 	typ := reflect.TypeOf(item.v)
+// 	if typ == nil {
+// 		return writeByte(w, 0xc0)
+// 	}
 
-	return item.encode(w, item)
-}
+// 	return item.encode(w, item)
+// }
 
-type encode func(w io.Writer, item *Item) error
+// type encode func(w io.Writer, item *Item) error
 
-func encodeByteArray(w io.Writer, item *Item) error {
-	val := reflect.ValueOf(item.v)
-	if !val.CanAddr() {
-		// Slice requires the value to be addressable.
-		// Make it addressable by copying.
-		copy := reflect.New(val.Type()).Elem()
-		copy.Set(val)
-		val = copy
-	}
-	size := val.Len()
-	slice := val.Slice(0, size).Bytes()
-	return encodeBytes(w, slice)
-}
+// func encodeByteArray(w io.Writer, item *Item) error {
+// 	val := reflect.ValueOf(item.v)
+// 	if !val.CanAddr() {
+// 		// Slice requires the value to be addressable.
+// 		// Make it addressable by copying.
+// 		copy := reflect.New(val.Type()).Elem()
+// 		copy.Set(val)
+// 		val = copy
+// 	}
+// 	size := val.Len()
+// 	slice := val.Slice(0, size).Bytes()
+// 	return encodeBytes(w, slice)
+// }
 
-func encodeEncoder(w io.Writer, item *Item) error {
-	return writeBytes(w, item.w.data)
-}
+// func encodeEncoder(w io.Writer, item *Item) error {
+// 	return writeBytes(w, item.w.data)
+// }
 
-func encodePtr(w io.Writer, item *Item) error {
-	val := reflect.ValueOf(item.v)
-	if val.IsNil() {
-		typ := reflect.TypeOf(item.v).Elem()
-		kind := typ.Kind()
+// func encodePtr(w io.Writer, item *Item) error {
+// 	val := reflect.ValueOf(item.v)
+// 	if val.IsNil() {
+// 		typ := reflect.TypeOf(item.v).Elem()
+// 		kind := typ.Kind()
 
-		if kind == reflect.Array && isByte(typ.Elem()) {
-			return writeByte(w, 0x80)
-		} else if kind == reflect.Struct || kind == reflect.Array {
-			return writeByte(w, 0xc0)
-		} else {
-			v := reflect.Zero(typ).Interface()
-			item, _ := getItem(v)
-			return encodeItem(w, item)
-		}
-	}
+// 		if kind == reflect.Array && isByte(typ.Elem()) {
+// 			return writeByte(w, 0x80)
+// 		} else if kind == reflect.Struct || kind == reflect.Array {
+// 			return writeByte(w, 0xc0)
+// 		} else {
+// 			v := reflect.Zero(typ).Interface()
+// 			item, _ := getItem(v)
+// 			return encodeItem(w, item)
+// 		}
+// 	}
 
-	panic("This shouldn't happen")
-}
+// 	panic("This shouldn't happen")
+// }
 
-func encodeSlice(w io.Writer, item *Item) error {
-	if err := encodeListHeader(w, item.dataSize); err != nil {
-		return err
-	}
+// func encodeSlice(w io.Writer, item *Item) error {
+// 	if err := encodeListHeader(w, item.dataSize); err != nil {
+// 		return err
+// 	}
 
-	for i := 0; i < len(item.itemList); i++ {
-		if err := encodeItem(w, item.itemList[i]); err != nil {
-			return err
-		}
-	}
+// 	for i := 0; i < len(item.itemList); i++ {
+// 		if err := encodeItem(w, item.itemList[i]); err != nil {
+// 			return err
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
-func encodeStruct(w io.Writer, item *Item) error {
-	return encodeSlice(w, item)
-}
+// func encodeStruct(w io.Writer, item *Item) error {
+// 	return encodeSlice(w, item)
+// }
 
-func encodeListHeader(w io.Writer, size int) error {
-	if size < 56 {
-		return writeByte(w, 0xc0+byte(size))
-	} else {
-		byteHeader := convertBigEndian(uint(size))
-		if err := writeByte(w, 0xf7 + byte(len(byteHeader))); err != nil {
-			return err
-		}
+// func encodeByteSlice(w io.Writer, item *Item) error {
+// 	v := item.v.([]byte)
 
-		return writeBytes(w, byteHeader)
-	}
-	return nil
-}
+// 	if len(v) == 1 {
+// 		return encodeByte(w, v[0])
+// 	} else {
+// 		return encodeBytes(w, v)
+// 	}
+// }
 
-func encodeByteSlice(w io.Writer, item *Item) error {
-	v := item.v.([]byte)
+// func encodeString(w io.Writer, item *Item) error {
+// 	v := item.v.(string)
+// 	if len(v) == 1 {
+// 		return encodeByte(w, v[0])
+// 	} else {
+// 		if err := encodeByteHeader(w, len(v)); err != nil {
+// 			return err
+// 		}
+// 		return writeBytes(w, []byte(v))
+// 	}
+// }
 
-	if len(v) == 1 {
-		return encodeByte(w, v[0])
-	} else {
-		return encodeBytes(w, v)
-	}
-}
+// func encodeUint(w io.Writer, item *Item) error {
+// 	v := item.v.(uint64)
+// 	if v == 0 {
+// 		return writeByte(w, 0x80)
+// 	} else if v < 128 {
+// 		return encodeByte(w, byte(v))
+// 	} else {
+// 		b := convertBigEndian(uint(v))
+// 		return encodeBytes(w, b)
+// 	}
+// }
 
-func encodeString(w io.Writer, item *Item) error {
-	v := item.v.(string)
-	if len(v) == 1 {
-		return encodeByte(w, v[0])
-	} else {
-		if err := encodeByteHeader(w, len(v)); err != nil {
-			return err
-		}
-		return writeBytes(w, []byte(v))
-	}
-}
+// func encodeIntPtr(w io.Writer, item *Item) error {
+// 	v := item.v.(*big.Int)
+// 	if v == nil {
+// 		return writeByte(w, 0x80)
+// 	}
+// 	return encodeBigInt(w, v)
+// }
 
-func encodeUint(w io.Writer, item *Item) error {
-	v := item.v.(uint64)
-	if v == 0 {
-		return writeByte(w, 0x80)
-	} else if v < 128 {
-		return encodeByte(w, byte(v))
-	} else {
-		b := convertBigEndian(uint(v))
-		return encodeBytes(w, b)
-	}
-}
+// func encodeInt(w io.Writer, item *Item) error {
+// 	v := item.v.(big.Int)
+// 	return encodeBigInt(w, &v)
+// }
 
-func encodeIntPtr(w io.Writer, item *Item) error {
-	v := item.v.(*big.Int)
-	if v == nil {
-		return writeByte(w, 0x80)
-	}
-	return encodeBigInt(w, v)
-}
+// func encodeBigInt(w io.Writer, v *big.Int) error {
+// 	if sign := v.Sign(); sign < 0 {
+// 		panic("rlp: can not encode negative big.Int")
+// 	} else if sign == 0 {
+// 		return writeByte(w, 0x80)
+// 	} else if vb := v.Bytes(); len(vb) == 1 {
+// 		return encodeByte(w, vb[0])
+// 	} else {
+// 		return encodeBytes(w, vb)
+// 	}
+// }
 
-func encodeInt(w io.Writer, item *Item) error {
-	v := item.v.(big.Int)
-	return encodeBigInt(w, &v)
-}
+// func encodeBool(w io.Writer, item *Item) error {
+// 	v := item.v.(bool)
+// 	if v {
+// 		return writeByte(w, 0x01)
+// 	} else {
+// 		return writeByte(w, 0x80)
+// 	}
+// }
 
-func encodeBigInt(w io.Writer, v *big.Int) error {
-	if sign := v.Sign(); sign < 0 {
-		panic("rlp: can not encode negative big.Int")
-	} else if sign == 0 {
-		return writeByte(w, 0x80)
-	} else if vb := v.Bytes(); len(vb) == 1 {
-		return encodeByte(w, vb[0])
-	} else {
-		return encodeBytes(w, vb)
-	}
-}
-
-func encodeBool(w io.Writer, item *Item) error {
-	v := item.v.(bool)
-	if v {
-		return writeByte(w, 0x01)
-	} else {
-		return writeByte(w, 0x80)
-	}
-}
-
-func writeByte(w io.Writer, b byte) error {
-	_, err := w.Write([]byte{b})
-	return err
-}
-
-func writeBytes(w io.Writer, b []byte) error {
-	_, err := w.Write(b)
-	return err
-}
-
-func encodeByte(w io.Writer, b byte) error {
+func encodeByte(bs []byte, b byte) []byte {
 	if b <= 0x7F {
-		return writeByte(w, b)
-	} else {
-		return writeBytes(w, []byte{0x81,b})
+		return append(bs, b)
 	}
+
+	return append(bs, 0x81, b)
 }
 
-func encodeBytes(w io.Writer, b []byte) error {
-	if err := encodeByteHeader(w, len(b)); err != nil {
-		return err
-	}
-	return writeBytes(w, b)
+func encodeBytes(bs []byte, b []byte) []byte {
+	bs = encodeByteHeader(bs, len(b))
+	return append(bs, b...)
 }
 
-func encodeByteHeader(w io.Writer, size int) error {
+func encodeListHeader(bs []byte, size int) []byte {
 	if size < 56 {
-		return writeByte(w, 0x80+byte(size))
-	} else {
-		byteHeader := convertBigEndian(uint(size))
-		if err := writeByte(w, 0xb7 + byte(len(byteHeader))); err != nil {
-			return err
-		}
-		return writeBytes(w, byteHeader)
+		return append(bs, 0xc0+byte(size))
 	}
+
+	byteHeader := convertBigEndian(uint(size))
+	bs = append(bs, 0xf7+byte(len(byteHeader)))
+
+	return append(bs, byteHeader...)
+}
+
+func encodeByteHeader(bs []byte, size int) []byte {
+	if size < 56 {
+		return append(bs, 0x80+byte(size))
+	}
+
+	byteHeader := convertBigEndian(uint(size))
+	bs = append(bs, 0xb7+byte(len(byteHeader)))
+	return append(bs, byteHeader...)
 }
 
 func convertBigEndian(num uint) []byte {
 	data := make([]byte, 0)
 
 	for ; num >= 1; num = num >> 8 {
-		data = append([]byte{ byte(num) }, data...)
+		data = append([]byte{byte(num)}, data...)
 	}
 
 	return data
