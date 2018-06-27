@@ -42,9 +42,9 @@ func encode(v interface{}) ([]byte, error) {
 	bs := make([]byte, 0, siz)
 	bs = i.w(val, bs)
 
-	// if len(bs) != siz {
-	// 	return nil, fmt.Errorf("Size doesn't match: %d but should be %d", len(bs), siz)
-	// }
+	if len(bs) != siz {
+		return nil, fmt.Errorf("Size doesn't match: %d but should be %d", len(bs), siz)
+	}
 
 	return bs, nil
 }
@@ -230,9 +230,7 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 		return nil, nil, err
 	}
 
-	sizeCache := map[reflect.Value]int{}
-
-	return func(v reflect.Value) (int, error) {
+	sizer := func(v reflect.Value) (int, error) {
 		siz := 0
 		for i := 0; i < len(fs); i++ {
 			f := v.Field(i)
@@ -245,20 +243,18 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 			siz += fsiz
 		}
 
-		sizeCache[v] = siz
-
 		headerSize, err := getListHeaderSize(siz)
 		if err != nil {
 			return 0, err
 		}
 
 		return siz + headerSize, nil
-	}, 
-	func(v reflect.Value, b []byte) []byte {
-		siz := sizeCache[v] 
-		delete(sizeCache, v)
+	}
 
-		b = encodeListHeader(b, siz)
+	return sizer, func(v reflect.Value, b []byte) []byte {
+		siz, _ := sizer(v)
+
+		b = encodeListHeader(b, deriveListHeaderSize(siz))
 		for i := 0; i < len(fs); i++ {
 			f := v.Field(i)
 
@@ -271,10 +267,9 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 }
 
 func makeSliceFuncs(typ reflect.Type) (sizer, writer) {
-	sizeCache := map[reflect.Value]int{}
 	elemInfo := getInfo(typ.Elem())
 
-	return func(v reflect.Value) (int, error) {
+	sizer := func(v reflect.Value) (int, error) {
 		siz := 0
 		for i:= 0; i < v.Len(); i++ {
 			v0 := v.Index(i)
@@ -286,19 +281,18 @@ func makeSliceFuncs(typ reflect.Type) (sizer, writer) {
 			siz += siz0
 		}
 
-		sizeCache[v] = siz
-
 		listHeaderSize, err := getListHeaderSize(siz)
 		if err != nil {
 			return 0, fmt.Errorf("failed to calculate list header size: %v", err)
 		}
 
 		return siz + listHeaderSize, nil
-	}, func(v reflect.Value, b []byte) []byte {
-		siz := sizeCache[v]
-		delete(sizeCache, v)
+	}
 
-		b = encodeListHeader(b, siz)
+	return sizer, func(v reflect.Value, b []byte) []byte {
+		siz, _ := sizer(v)
+
+		b = encodeListHeader(b, deriveListHeaderSize(siz))
 		for i := 0; i < v.Len(); i++ {
 			v0 := v.Index(i)
 			b = elemInfo.w(v0, b)
@@ -306,6 +300,29 @@ func makeSliceFuncs(typ reflect.Type) (sizer, writer) {
 
 		return b
 	}
+}
+
+func deriveListHeaderSize(siz int) int {
+	switch {
+	case siz < 56:
+		return siz - 1 
+	case siz < (1 >> 8) + 2: 
+		return siz - 2 
+	case siz < (1 >> 16) + 3:
+		return siz - 3
+	case siz < (1 >> 24) + 4:
+		return siz - 4
+	case siz < (1 >> 32) + 5:
+		return siz - 5
+	case siz < (1 >> 40) + 6:
+		return siz - 6
+	case siz < (1 >> 48) + 7:
+		return siz - 7
+	case siz < (1 >> 56) + 8:
+		return siz - 8
+	}
+
+	panic("this shouldn't happen")
 }
 
 // Encoder ...
