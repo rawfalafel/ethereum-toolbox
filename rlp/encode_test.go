@@ -13,6 +13,12 @@ type mystruct struct {
 	B string
 }
 
+type mystruct2 struct {
+	A string
+	B string
+	C string
+}
+
 type encTest struct {
 	val           interface{}
 	output, error string
@@ -43,6 +49,7 @@ type hasIgnoredField struct {
 
 var encTests = []encTest{
 	{ val: mystruct{A: "abc", B: "def"}, output: "C88361626383646566"},
+
 	// booleans
 	// {val: true, output: "01"},
 	// {val: false, output: "80"},
@@ -255,4 +262,21 @@ func unhex(str string) []byte {
 		panic(fmt.Sprintf("invalid hex string: %q", str))
 	}
 	return b
+}
+
+func BenchmarkEncodeStruct(b *testing.B) {
+	// s := mystruct{A: "abc", B: "def"}
+	s := mystruct2{ 
+		A: "abc", 
+		B: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur mauris magna, suscipit sed vehicula non, iaculis faucibus tortor. Proin suscipit ultricies malesuada. Duis tortor elit, dictum quis tristique eu, ultrices at risus. Morbi a est imperdiet mi ullamcorper aliquet suscipit nec lorem. Aenean quis leo mollis, vulputate elit varius, consequat enim. Nulla ultrices turpis justo, et posuere urna consectetur nec. Proin non convallis metus. Donec tempor ipsum in mauris congue sollicitudin. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae; Suspendisse convallis sem vel massa faucibus, eget lacinia lacus tempor. Nulla quis ultricies purus. Proin auctor rhoncus nibh condimentum mollis. Aliquam consequat enim at metus luctus, a eleifend purus egestas. Curabitur at nibh metus. Nam bibendum, neque at auctor tristique, lorem libero aliquet arcu, non interdum tellus lectus sit amet eros. Cras rhoncus, metus ac ornare cursus, dolor justo ultrices metus, at ullamcorper volutpat",
+		C: "ghi",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := EncodeToBytes(s)
+		if err != nil {
+			b.Fatalf("failed EncodeToBytes: %v", err)
+		}
+	}
 }

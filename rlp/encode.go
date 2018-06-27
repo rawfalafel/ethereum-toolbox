@@ -140,27 +140,18 @@ func stringWriter(v reflect.Value, b []byte) []byte {
 	return append(b, str...)
 }
 
-var sizeCache = map[reflect.Value]int{}
-
 func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 	fs, err := getFieldInfo(typ)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return func(v reflect.Value) (int, error) {
+	sizeCache := map[reflect.Value]int{}
+
+	return func (v reflect.Value) (int, error) {
 		siz := 0
 		for i := 0; i < len(fs); i++ {
 			f := v.Field(i)
-
-			// ignore unexported fields
-			if !fs[i].exported {
-				continue
-			}
-
-			if fs[i].tags.ignored {
-				continue
-			}
 
 			fsiz, err := fs[i].s(f)
 			if err != nil {
@@ -186,15 +177,6 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 		b = encodeListHeader(b, siz)
 		for i := 0; i < len(fs); i++ {
 			f := v.Field(i)
-
-			// ignore unexported fields
-			if !fs[i].exported {
-				continue
-			}
-
-			if fs[i].tags.ignored {
-				continue
-			}
 
 			b = fs[i].w(f, b)
 		}
@@ -343,6 +325,10 @@ func getFieldInfo(typ reflect.Type) ([]*fieldInfo, error) {
 		tags, err := parseStructTag(typ, i)
 		if err != nil {
 			return nil, err
+		}
+
+		if tags.ignored || structF.PkgPath != "" {
+			continue
 		}
 
 		ei := getInfo(structF.Type)
@@ -733,14 +719,15 @@ func encodeByteHeader(bs []byte, size int) []byte {
 	return append(bs, byteHeader...)
 }
 
-func convertBigEndian(num uint) []byte {
-	data := make([]byte, 0)
+var data = make([]byte, 8)
 
-	for ; num >= 1; num = num >> 8 {
-		data = append([]byte{byte(num)}, data...)
+func convertBigEndian(num uint) []byte {
+	var i int
+	for i = 7; num >= 1; i, num = i-1, num >> 8 {
+		data[i] = byte(num)
 	}
 
-	return data
+	return data[i+1:]
 }
 
 func isUint(k reflect.Kind) bool {
