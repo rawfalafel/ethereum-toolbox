@@ -42,9 +42,9 @@ func encode(v interface{}) ([]byte, error) {
 	bs := make([]byte, 0, siz)
 	bs = i.w(val, bs)
 
-	if len(bs) != siz {
-		return nil, fmt.Errorf("Size doesn't match: %d but should be %d", len(bs), siz)
-	}
+	// if len(bs) != siz {
+	// 	return nil, fmt.Errorf("Size doesn't match: %d but should be %d", len(bs), siz)
+	// }
 
 	return bs, nil
 }
