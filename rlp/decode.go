@@ -55,10 +55,53 @@ func (buf *buffer) getDecoder(typ reflect.Type) (decoder, error) {
 		return (*buffer).decodeString, nil
 	case kind == reflect.Slice || kind == reflect.Array:
 	case kind == reflect.Struct:
+		return (*buffer).decodeStruct, nil
 	case kind == reflect.Ptr:
 	}
 
 	return nil, fmt.Errorf("decoder does not support type: %v", typ)
+}
+
+func (buf *buffer) decodeStruct(val reflect.Value) error {
+	_, err := buf.getList()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (buf *buffer) getList() ([]byte, error) {
+	var bytes []byte
+
+	dat := buf.getCurrentSlice()
+	numBytes := len(dat)
+	if dat[0] < 0xc0 {
+		return nil, fmt.Errorf("invalid leading byte: %x", dat[0])
+	} else if dat[0] < 0xf7 {
+		siz := int(dat[0] - 0xc0)
+		if 1+siz > numBytes {
+			return nil, fmt.Errorf("reached end of buffer")
+		}
+
+		bytes = dat[1:1+siz]
+		buf.idx += 1+siz
+	} else {
+		headerSiz := uint(dat[0] - 0xf7)
+		if 1+headerSiz > uint(numBytes) {
+			return nil, fmt.Errorf("reached end of buffer")
+		}
+		
+		siz := buf.decodeBigEndian(dat[1:1+headerSiz])
+		if 1+headerSiz+siz > uint(numBytes) {
+			return nil, fmt.Errorf("reached end of buffer")
+		}
+
+		bytes = dat[1+headerSiz:1+headerSiz+siz]
+		buf.idx += 1 + int(headerSiz+siz)
+	}
+	
+	return bytes, nil
 }
 
 func (buf *buffer) decodeString(val reflect.Value) error {
@@ -90,7 +133,7 @@ func (buf *buffer) getBytes() ([]byte, error) {
 			return nil, fmt.Errorf("reached end of buffer")
 		}
 
-		bytes = dat[1 : 1+siz]
+		bytes = dat[1:1+siz]
 		buf.idx += 1 + siz
 	} else if dat[0] < 0xc0 {
 		headerSiz := uint(dat[0] - 0xb7)
@@ -105,7 +148,7 @@ func (buf *buffer) getBytes() ([]byte, error) {
 
 		bytes = dat[1+headerSiz:1+headerSiz+siz]
 		// TODO: Can idx be int?
-		buf.idx += 1 + int(headerSiz + siz)
+		buf.idx += 1 + int(headerSiz+siz)
 	} else {
 		return nil, fmt.Errorf("invalid leading byte: %x", dat[0])
 	}
