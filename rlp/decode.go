@@ -93,18 +93,19 @@ func (buf *buffer) getBytes() ([]byte, error) {
 		bytes = dat[1 : 1+siz]
 		buf.idx += 1 + siz
 	} else if dat[0] < 0xc0 {
-		headerSiz := int(dat[0] - 0xb7)
-		if 1+headerSiz > numBytes {
+		headerSiz := uint(dat[0] - 0xb7)
+		if 1+headerSiz > uint(numBytes) {
 			return nil, fmt.Errorf("reached end of buffer")
 		}
 
-		siz := int(buf.decodeBigEndian(dat[1:1+headerSiz]))
-		if 1+headerSiz+siz > numBytes {
+		siz := buf.decodeBigEndian(dat[1:1+headerSiz])
+		if 1+headerSiz+siz > uint(numBytes) {
 			return nil, fmt.Errorf("reached end of buffer")
 		}
 
 		bytes = dat[1+headerSiz:1+headerSiz+siz]
-		buf.idx += 1 + headerSiz + siz
+		// TODO: Can idx be int?
+		buf.idx += 1 + int(headerSiz + siz)
 	} else {
 		return nil, fmt.Errorf("invalid leading byte: %x", dat[0])
 	}
@@ -117,11 +118,9 @@ func (buf *buffer) decodeBigEndian(dat []byte) uint {
 
 	siz := len(dat)
 	for i, b := range dat {
-		temp := uint(b) >> uint(8 * (siz - 1 - i))
-		out += temp
+		tmp := uint(b) << uint(8*(siz-1-i))
+		out += tmp
 	}
-
-	println("out", out)
 
 	return out
 }
