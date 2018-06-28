@@ -271,27 +271,15 @@ func unhex(str string) []byte {
 }
 
 func BenchmarkEncodeStruct(b *testing.B) {
-	// s := mystruct{A: "abc", B: "def"}
-	// s := mystruct2{ 
-	// 	A: "abc", 
-	// 	B: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur mauris magna, suscipit sed vehicula non, iaculis faucibus tortor. Proin suscipit ultricies malesuada. Duis tortor elit, dictum quis tristique eu, ultrices at risus. Morbi a est imperdiet mi ullamcorper aliquet suscipit nec lorem. Aenean quis leo mollis, vulputate elit varius, consequat enim. Nulla ultrices turpis justo, et posuere urna consectetur nec. Proin non convallis metus. Donec tempor ipsum in mauris congue sollicitudin. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae; Suspendisse convallis sem vel massa faucibus, eget lacinia lacus tempor. Nulla quis ultricies purus. Proin auctor rhoncus nibh condimentum mollis. Aliquam consequat enim at metus luctus, a eleifend purus egestas. Curabitur at nibh metus. Nam bibendum, neque at auctor tristique, lorem libero aliquet arcu, non interdum tellus lectus sit amet eros. Cras rhoncus, metus ac ornare cursus, dolor justo ultrices metus, at ullamcorper volutpat",
-	// 	C: "ghi",
-	// }
-	str := "abc"
-	str2 := &str
-	str3 := "def"
-	str4 := &str3
-	s := mystruct3{
-		A: &str,
-		B: &str2,
-		C: &str4,
+	s1 := mystruct{
+		A: "abc",
+		B: "def",
 	}
-	// s := []string{"abc", "def", "ghi"}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := EncodeToBytes(s)
-		// _, err := rlp2.EncodeToBytes(s)
+		dat, err := EncodeToBytes(s1)
+		println(fmt.Errorf("%x", dat))
 		if err != nil {
 			b.Fatalf("failed EncodeToBytes: %v", err)
 		}
