@@ -99,12 +99,17 @@ func (ei *encodeInfo) populate(typ reflect.Type) {
 	case typ.AssignableTo(bigIntPtr):
 		ei.s, ei.w = bigIntPtrSizer, bigIntPtrWriter
 	case typ.AssignableTo(bigInt):
+		ei.s, ei.w = bigIntNoPtrSizer, bigIntNoPtrWriter
 	case isUint(kind):
+		ei.s, ei.w = uintSizer, uintWriter
 	case kind == reflect.String:
 		ei.s, ei.w = stringSizer, stringWriter
 	case kind == reflect.Bool:
+		ei.s, ei.w = boolSizer, boolWriter
 	case kind == reflect.Slice && isByte(typ.Elem()):
+		ei.s, ei.w = byteSliceSizer, byteSliceWriter
 	case kind == reflect.Array && isByte(typ.Elem()):
+		ei.s, ei.w = byteArraySizer, byteArrayWriter
 	case kind == reflect.Slice || kind == reflect.Array: 
 		ei.s, ei.w = makeSliceFuncs(typ)
 	case kind == reflect.Struct:
@@ -143,20 +148,29 @@ func makePtrFuncs(typ reflect.Type) (sizer, writer) {
 	} 
 }
 
+func bigIntNoPtrSizer(v reflect.Value) (int, error) {
+	i := v.Interface().(big.Int)
+	return bigIntSizer(&i)
+}
+
 func bigIntPtrSizer(v reflect.Value) (int, error) {
 	if v.IsNil() {
 		return 1, nil
 	} 
 
 	v1 := v.Interface().(*big.Int)
-	sign := v1.Sign()
+	return bigIntSizer(v1)
+}
+
+func bigIntSizer(i *big.Int) (int, error) {
+	sign := i.Sign()
 	if sign == -1 {
 		return 0, fmt.Errorf("rlp: cannot encode negative *big.Int")
 	} else if sign == 0 {
 		return 1, nil
 	} 
 
-	intAsBytes := v1.Bytes()
+	intAsBytes := i.Bytes()
 	byteHeaderSize, err := getByteHeaderSize(intAsBytes)
 	if err != nil {
 		return 0, err
@@ -165,13 +179,22 @@ func bigIntPtrSizer(v reflect.Value) (int, error) {
 	return byteHeaderSize + len(intAsBytes), nil
 }
 
+func bigIntNoPtrWriter(v reflect.Value, b []byte) []byte {
+	i := v.Interface().(big.Int)
+	return bigIntWriter(&i, b)
+}
+
 func bigIntPtrWriter(v reflect.Value, b []byte) []byte {
 	if v.IsNil() {
 		return append(b, 0x80)
 	}
 
 	v1 := v.Interface().(*big.Int) 
-	vb := v1.Bytes()
+	return bigIntWriter(v1, b)
+}
+
+func bigIntWriter(i *big.Int, b []byte) []byte {
+	vb := i.Bytes()
 	if len(vb) == 1 {
 		return encodeByte(b, vb[0])
 	} 
@@ -222,6 +245,19 @@ func stringWriter(v reflect.Value, b []byte) []byte {
 
 	b = encodeByteHeader(b, len(str))
 	return append(b, str...)
+}
+
+func boolSizer(reflect.Value) (int, error) {
+	return 1, nil
+}
+
+func boolWriter(v reflect.Value, b []byte) []byte {
+	val := v.Bool()
+	if val {
+		return append(b, 0x01)
+	}
+
+	return append(b, 0x80)
 }
 
 func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
@@ -336,24 +372,6 @@ var (
 	bigIntPtr        = reflect.PtrTo(bigInt)
 )
 
-// func getByteArray(v interface{}) (*Item, error) {
-// 	item := &Item{v: v, encode: encodeByteArray}
-
-// 	val := reflect.ValueOf(v)
-// 	len := val.Len()
-// 	if len == 0 && val.Index(0).Interface().(byte) <= 0x7F {
-// 		item.size = 1
-// 	} else if len < 56 {
-// 		item.size = 1 + len
-// 	} else if encodedSize := getBigEndianSize(uint(len)); encodedSize > 9 {
-// 		return nil, fmt.Errorf("encoding size exceeded limit: %d bytes long", len)
-// 	} else {
-// 		item.size = 1 + encodedSize + len
-// 	}
-
-// 	return item, nil
-// }
-
 type tags struct {
 	// rlp:"nil" controls whether empty input results in a nil pointer.
 	nilOK bool
@@ -433,32 +451,6 @@ func getListHeaderSize(size int) (int, error) {
 	}
 }
 
-// func getByteSlice(v interface{}) (*Item, error) {
-// 	bytes := reflect.ValueOf(v).Bytes()
-// 	item := &Item{v: bytes, encode: encodeByteSlice}
-
-// 	size, err := getByteHeaderSize(bytes)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	item.size = size + len(bytes)
-// 	return item, nil
-// }
-
-// func getUint(v interface{}) *Item {
-// 	vAsUint := reflect.ValueOf(v).Uint()
-// 	item := &Item{v: vAsUint, encode: encodeUint}
-
-// 	if vAsUint < 128 {
-// 		item.size = 1
-// 	} else {
-// 		item.size = getBigEndianSize(uint(vAsUint)) + 1
-// 	}
-
-// 	return item
-// }
-
 func getStringHeaderSize(data string) (int, error) {
 	size := len(data)
 	if size == 1 && data[0] <= 0x7F {
@@ -494,113 +486,74 @@ func getBigEndianSize(num uint) int {
 	return int(i)
 }
 
-// func getIntPtr(v *big.Int) (*Item, error) {
-// 	item := &Item{v: v, encode: encodeIntPtr}
+func byteArraySizer(v reflect.Value) (int, error) {
+	len := v.Len()
+	if len == 0 && v.Index(0).Interface().(byte) <= 0x7f {
+		return 1, nil
+	} else if len < 56 {
+		return 1+len, nil
+	} else if encodedSize := getBigEndianSize(uint(len)); encodedSize > 9 {
+		return 0, fmt.Errorf("encoding size limit exceeded: %d bytes long", len)
+	} else {
+		return 1+encodedSize+len, nil
+	}
+}
 
-// 	if v == nil {
-// 		item.size = 1
-// 	} else if sign := v.Sign(); sign == -1 {
-// 		return nil, fmt.Errorf("rlp: cannot encode negative *big.Int")
-// 	} else if sign == 0 {
-// 		item.size = 1
-// 	} else {
-// 		intAsBytes := v.Bytes()
-// 		byteHeaderSize, err := getByteHeaderSize(intAsBytes)
-// 		if err != nil {
-// 			return nil, err
-// 		}
+func byteArrayWriter(v reflect.Value, b []byte) []byte {
+	if !v.CanAddr() {
+		// Slice requires the value to be addressable.
+		// Make it addressable by copying.
+		copy := reflect.New(v.Type()).Elem()
+		copy.Set(v)
+		v = copy
+	}
+	size := v.Len()
+	slice := v.Slice(0, size).Bytes()
+	return encodeBytes(b, slice)
+}
 
-// 		item.size = byteHeaderSize + len(intAsBytes)
-// 	}
+func byteSliceSizer(v reflect.Value) (int, error) {
+	// TODO: Calculate without converting to bytes
+	bytes := v.Bytes()
 
-// 	return item, nil
-// }
+	size, err := getByteHeaderSize(bytes)
+	if err != nil {
+		return 0, err
+	}
 
-// func getInt(v big.Int) (*Item, error) {
-// 	item, err := getIntPtr(&v)
-// 	item.encode = encodeInt
-// 	return item, err
-// }
+	return size + len(bytes), nil
+}
 
-// func getBool(v interface{}) *Item {
-// 	return &Item{v: 1, size: 1, encode: encodeBool}
-// }
+func byteSliceWriter(v reflect.Value, b []byte) []byte {
+	bytes := v.Bytes()
 
-// func encodeByteArray(w io.Writer, item *Item) error {
-// 	val := reflect.ValueOf(item.v)
-// 	if !val.CanAddr() {
-// 		// Slice requires the value to be addressable.
-// 		// Make it addressable by copying.
-// 		copy := reflect.New(val.Type()).Elem()
-// 		copy.Set(val)
-// 		val = copy
-// 	}
-// 	size := val.Len()
-// 	slice := val.Slice(0, size).Bytes()
-// 	return encodeBytes(w, slice)
-// }
+	if len(bytes) == 1 {
+		return encodeByte(b, bytes[0])
+	} else {
+		return encodeBytes(b, bytes)
+	}
+}
 
-// func encodeSlice(w io.Writer, item *Item) error {
-// 	if err := encodeListHeader(w, item.dataSize); err != nil {
-// 		return err
-// 	}
+func uintSizer(v reflect.Value) (int, error) {
+	v1 := v.Uint()
 
-// 	for i := 0; i < len(item.itemList); i++ {
-// 		if err := encodeItem(w, item.itemList[i]); err != nil {
-// 			return err
-// 		}
-// 	}
+	if v1 < 128 {
+		return 1, nil
+	}
 
-// 	return nil
-// }
+	return getBigEndianSize(uint(v1)) + 1, nil
+}
 
-// func encodeByteSlice(w io.Writer, item *Item) error {
-// 	v := item.v.([]byte)
+func uintWriter(v reflect.Value, b []byte) []byte {
+	v1 := v.Uint()
+	if v1 == 0 {
+		return append(b, 0x80)
+	} else if v1 < 128 {
+		return encodeByte(b, byte(v1))
+	} 
 
-// 	if len(v) == 1 {
-// 		return encodeByte(w, v[0])
-// 	} else {
-// 		return encodeBytes(w, v)
-// 	}
-// }
-
-// func encodeUint(w io.Writer, item *Item) error {
-// 	v := item.v.(uint64)
-// 	if v == 0 {
-// 		return writeByte(w, 0x80)
-// 	} else if v < 128 {
-// 		return encodeByte(w, byte(v))
-// 	} else {
-// 		b := convertBigEndian(uint(v))
-// 		return encodeBytes(w, b)
-// 	}
-// }
-
-// func encodeInt(w io.Writer, item *Item) error {
-// 	v := item.v.(big.Int)
-// 	return encodeBigInt(w, &v)
-// }
-
-// func encodeBigInt(w io.Writer, v *big.Int) error {
-// 	if sign := v.Sign(); sign < 0 {
-// 		panic("rlp: can not encode negative big.Int")
-// 	} else if sign == 0 {
-// 		return writeByte(w, 0x80)
-// 	} else if vb := v.Bytes(); len(vb) == 1 {
-// 		return encodeByte(w, vb[0])
-// 	} else {
-// 		return encodeBytes(w, vb)
-// 	}
-// }
-
-// func encodeBool(w io.Writer, item *Item) error {
-// 	v := item.v.(bool)
-// 	if v {
-// 		return writeByte(w, 0x01)
-// 	} else {
-// 		return writeByte(w, 0x80)
-// 	}
-// }
+	return encodeBytes(b, convertBigEndian(uint(v1)))
+}
 
 func encodeByte(bs []byte, b byte) []byte {
 	if b <= 0x7F {
