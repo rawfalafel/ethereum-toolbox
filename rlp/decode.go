@@ -1,14 +1,17 @@
 package rlp
 
 import (
+	"math/big"
+	"io"
 	"fmt"
 	"reflect"
 )
 
-// Decode ...
-// func Decode(r io.Reader, val interface{}) error {
 
-// }
+// Decode ...
+func Decode(r io.Reader, val interface{}) error {
+	return nil
+}
 
 // DecodeBytes ...
 func DecodeBytes(data []byte, v interface{}) error {
@@ -51,6 +54,14 @@ type decoder func(*buffer, reflect.Value) error
 func getDecoder(typ reflect.Type) (decoder, error) {
 	kind := typ.Kind()
 	switch {
+	case typ.AssignableTo(bigIntPtr):
+		return (*buffer).decodeBigIntPtr, nil
+	case typ.AssignableTo(bigInt):
+		return (*buffer).decodeBigInt, nil
+	case isUint(kind):
+		return (*buffer).decodeUint, nil
+	case kind == reflect.Bool:
+		return (*buffer).decodeBool, nil
 	case kind == reflect.String:
 		return (*buffer).decodeString, nil
 	case kind == reflect.Slice || kind == reflect.Array:
@@ -59,9 +70,89 @@ func getDecoder(typ reflect.Type) (decoder, error) {
 		return (*buffer).decodeStruct, nil
 	case kind == reflect.Ptr:
 		return makeDecodePtr(typ)
+	case kind == reflect.Interface:
 	}
 
 	return nil, fmt.Errorf("decoder does not support type: %v", typ)
+}
+
+func (buf *buffer) decodeBigInt(val reflect.Value) error {
+	return buf.decodeBigIntPtr(val.Addr())
+}
+
+func (buf *buffer) decodeBigIntPtr(val reflect.Value) error {
+	dat, err := buf.getBytes()
+	if err != nil {
+		return err
+	}
+
+	if len(dat) > 0 && dat[0] == 0 {
+		return fmt.Errorf("strings cannot have leading zeros")
+	}
+
+	i := val.Interface().(*big.Int)
+	if i == nil {
+		i = new(big.Int)
+		val.Set(reflect.ValueOf(i))
+	}
+
+	i.SetBytes(dat)
+
+	return nil
+}
+
+func (buf *buffer) decodeBool(val reflect.Value) error {
+	dat, err := buf.getBytes()
+	if err != nil {
+		return err
+	}
+
+	if len(dat) != 1 {
+		return fmt.Errorf("error parsing bool. item length (%d) too long", len(dat))
+	}
+
+	if dat[0] == 0x01 {
+		val.SetBool(true)
+	} else if dat[0] == 0x80 {
+		val.SetBool(false)
+	} else {
+		return fmt.Errorf("error parsing bool. byte code invalid: %x", dat[0])
+	}
+
+	return nil
+}
+
+func (buf *buffer) decodeUint(val reflect.Value) error {
+	dat, err := buf.getBytes()
+	if err != nil {
+		return err
+	}
+
+	// TODO: This needs to be a uint
+	siz := len(dat)
+	if siz == 0 {
+		return fmt.Errorf("error parsing uint. no bytes to parse")
+	} else if siz == 1 {
+		val.SetUint(uint64(dat[0]))
+		return nil
+	} else if siz > val.Type().Bits() {
+		return fmt.Errorf("error parsing uint. too many bytes to parse")
+	} 
+
+	val.SetUint(decodeBigEndian(dat))
+	return nil
+}
+
+func decodeBigEndian(dat []byte) uint64 {
+	var out uint64
+
+	siz := len(dat)
+	for i := 0; i < siz; i++ {
+		idx := siz-i-1
+		out += uint64(dat[idx]) << uint(8 * i)
+	}
+
+	return out
 }
 
 func makeDecodePtr(typ reflect.Type) (decoder, error) {

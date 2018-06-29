@@ -1,6 +1,7 @@
 package rlp
 
 import (
+	"math/big"
 	"fmt"
 	"reflect"
 	"encoding/hex"
@@ -54,7 +55,23 @@ var testcases = []testcase{
 		ptr: new([][]string),
 		dat: "d2c88361626383646566c883676869836a6b6c",
 	},
+	// bool
+	{ val: true, ptr: new(bool), dat: "01" },
+	// uint
+	{ val: uint32(5), ptr: new(uint32), dat: "05" },
+	{ val: uint32(0x05050505), ptr: new(uint32), dat: "8405050505" },
+	// big int
+	{ val: big.NewInt(1), ptr: new(*big.Int), dat: "01" },
+	{ val: veryBigInt, ptr: new(*big.Int), dat: "89FFFFFFFFFFFFFFFFFF" },
+	{ val: *big.NewInt(16), ptr: new(big.Int), dat: "10" },
 }
+
+var (
+	veryBigInt = big.NewInt(0).Add(
+		big.NewInt(0).Lsh(big.NewInt(0xFFFFFFFFFFFFFF), 16),
+		big.NewInt(0xFFFF),
+	)
+)
 
 func TestEncodeCheck(t *testing.T) {
 	str := "string"
