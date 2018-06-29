@@ -19,8 +19,11 @@ type testcase struct {
 	dat  string
 }
 
+var dogstr = "dog"
+
 var testcases = []testcase{
 	{ val: "dog", ptr: new(string), dat: "83 64 6f 67" },
+	{ val: &dogstr, ptr: new(*string), dat: "83 64 6f 67" },
 	{ 
 		val: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur mauris magna, suscipit sed vehicula non, iaculis faucibus tortor. Proin suscipit ultricies malesuada. Duis tortor elit, dictum quis tristique eu, ultrices at risus. Morbi a est imperdiet mi ullamcorper aliquet suscipit nec lorem. Aenean quis leo mollis, vulputate elit varius, consequat enim. Nulla ultrices turpis justo, et posuere urna consectetur nec. Proin non convallis metus. Donec tempor ipsum in mauris congue sollicitudin. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae; Suspendisse convallis sem vel massa faucibus, eget lacinia lacus tempor. Nulla quis ultricies purus. Proin auctor rhoncus nibh condimentum mollis. Aliquam consequat enim at metus luctus, a eleifend purus egestas. Curabitur at nibh metus. Nam bibendum, neque at auctor tristique, lorem libero aliquet arcu, non interdum tellus lectus sit amet eros. Cras rhoncus, metus ac ornare cursus, dolor justo ultrices metus, at ullamcorper volutpat",
 		ptr: new(string),
@@ -31,11 +34,30 @@ var testcases = []testcase{
 		ptr: new(struct1),
 		dat: "c88361626383646566",
 	},
+	{
+		val: []string{"abc", "def"},
+		ptr: new([]string),
+		dat: "c88361626383646566",
+	},
+	{
+		val: []string{"abc", "def", "ghi", "jkl"},
+		ptr: new([]string),
+		dat: "d0836162638364656683676869836a6b6c",
+	},
+	{
+		val: [4]string{"abc", "def", "ghi", "jkl"},
+		ptr: new([4]string),
+		dat: "d0836162638364656683676869836a6b6c",
+	},
+	{
+		val: [][]string{[]string{"abc","def"},[]string{"ghi","jkl"}},
+		ptr: new([][]string),
+		dat: "d2c88361626383646566c883676869836a6b6c",
+	},
 }
 
 func TestEncodeCheck(t *testing.T) {
-	// str := "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur mauris magna, suscipit sed vehicula non, iaculis faucibus tortor. Proin suscipit ultricies malesuada. Duis tortor elit, dictum quis tristique eu, ultrices at risus. Morbi a est imperdiet mi ullamcorper aliquet suscipit nec lorem. Aenean quis leo mollis, vulputate elit varius, consequat enim. Nulla ultrices turpis justo, et posuere urna consectetur nec. Proin non convallis metus. Donec tempor ipsum in mauris congue sollicitudin. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae; Suspendisse convallis sem vel massa faucibus, eget lacinia lacus tempor. Nulla quis ultricies purus. Proin auctor rhoncus nibh condimentum mollis. Aliquam consequat enim at metus luctus, a eleifend purus egestas. Curabitur at nibh metus. Nam bibendum, neque at auctor tristique, lorem libero aliquet arcu, non interdum tellus lectus sit amet eros. Cras rhoncus, metus ac ornare cursus, dolor justo ultrices metus, at ullamcorper volutpat"
-	str := struct1{A: "abc", B: "def"}
+	str := "string"
 	b, _ := EncodeToBytes(str)
 	println(fmt.Sprintf("%x", b))
 }
@@ -47,7 +69,9 @@ func TestDecode(t *testing.T) {
 			t.Errorf("error parsing hex string: %v", err)
 		}
 
-		DecodeBytes(dat, testcase.ptr)
+		if err := DecodeBytes(dat, testcase.ptr); err != nil {
+			t.Errorf("error decoding: %v", err)
+		}
 
 		dref := reflect.ValueOf(testcase.ptr).Elem().Interface()
 		if !reflect.DeepEqual(dref, testcase.val) {
@@ -58,6 +82,23 @@ func TestDecode(t *testing.T) {
 
 func stripWhitespace(s string) string {
 	return strings.Join(strings.Split(s, " "), "")
+}
+
+func BenchmarkString(b *testing.B) {
+	str := "this is a string"
+	dat, err := EncodeToBytes(str)
+	if err != nil {
+		b.Errorf("error encoding: %v", err)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		str1 := new(string)
+		if err := DecodeBytes(dat, str1); err != nil {
+			b.Errorf("error decoding on run %d: %v\ndat: %x", i, err, dat)
+		}
+	}
 }
 
 func BenchmarkLongString(b *testing.B) {
@@ -71,6 +112,40 @@ func BenchmarkLongString(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		str1 := new(string)
+		if err := DecodeBytes(dat, str1); err != nil {
+			b.Errorf("error decoding on run %d: %v\ndat: %x", i, err, dat)
+		}
+	}
+}
+
+func BenchmarkStruct1(b *testing.B) {
+	str := struct1{A: "abc", B: "def"}
+	dat, err := EncodeToBytes(str)
+	if err != nil {
+		b.Errorf("error encoding: %v", err)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		str1 := new(struct1)
+		if err := DecodeBytes(dat, str1); err != nil {
+			b.Errorf("error decoding on run %d: %v\ndat: %x", i, err, dat)
+		}
+	}
+}
+
+func BenchmarkStringSlice(b *testing.B) {
+	str := []string{"abc", "def", "ghi", "jkl"}
+	dat, err := EncodeToBytes(str)
+	if err != nil {
+		b.Errorf("error encoding: %v", err)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		str1 := new([]string)
 		if err := DecodeBytes(dat, str1); err != nil {
 			b.Errorf("error decoding on run %d: %v\ndat: %x", i, err, dat)
 		}

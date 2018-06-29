@@ -21,7 +21,7 @@ func DecodeBytes(data []byte, v interface{}) error {
 
 	val1 := val.Elem()
 
-	dec, err := b.getDecoder(val1.Type())
+	dec, err := getDecoder(val1.Type())
 	if err != nil {
 		return err
 	}
@@ -48,28 +48,135 @@ type buffer struct {
 
 type decoder func(*buffer, reflect.Value) error
 
-func (buf *buffer) getDecoder(typ reflect.Type) (decoder, error) {
+func getDecoder(typ reflect.Type) (decoder, error) {
 	kind := typ.Kind()
 	switch {
 	case kind == reflect.String:
 		return (*buffer).decodeString, nil
 	case kind == reflect.Slice || kind == reflect.Array:
+		return (*buffer).decodeList, nil
 	case kind == reflect.Struct:
 		return (*buffer).decodeStruct, nil
 	case kind == reflect.Ptr:
+		return makeDecodePtr(typ)
 	}
 
 	return nil, fmt.Errorf("decoder does not support type: %v", typ)
 }
 
-func (buf *buffer) decodeStruct(val reflect.Value) error {
-	_, err := buf.getList()
+func makeDecodePtr(typ reflect.Type) (decoder, error) {
+	t1 := typ.Elem()
+	dec, err := getDecoder(t1)
+	if err != nil {
+		return nil, err
+	}
+
+	return func(buf *buffer, val reflect.Value) error {
+		val.Set(reflect.New(t1))
+		if err := dec(buf, val.Elem()); err != nil {
+			return err
+		}
+
+		return nil
+	} , nil
+}
+
+func (buf *buffer) decodeList(val reflect.Value) error {
+	listDat, err := buf.getList()
 	if err != nil {
 		return err
 	}
 
+	listBuf := newBuffer(listDat)
+
+	typ1 := val.Type().Elem()
+	dec, err := getDecoder(typ1)
+	if err != nil {
+		return err
+	}
+
+	sliceLen, err := listBuf.seekNumItems()
+	if err != nil {
+		return err
+	}
+
+	if val.Type().Kind() == reflect.Slice {
+		val.Set(reflect.MakeSlice(val.Type(), sliceLen, sliceLen))
+	} else if val.Type().Kind() == reflect.Array && val.Len() != sliceLen {
+		return fmt.Errorf("number of items (%d) does not match array size (%d", sliceLen, val.Len())
+	}
+
+	for i := 0; i < sliceLen; i++ {
+		if err := dec(listBuf, val.Index(i)); err != nil {
+			return fmt.Errorf("decoder failed for list index %d: %v", i, err)
+		}
+	}
+
+	if listBuf.idx != len(listBuf.dat) {
+		return fmt.Errorf("did not parse entire list buffer. idx: %d, length: %d", listBuf.idx, len(listBuf.dat))
+	}
+
 	return nil
 }
+
+func (buf *buffer) seekNumItems() (int, error) {
+	if buf.idx != 0 {
+		return 0, fmt.Errorf("must call seekNumItems before beginning to seek items")
+	}
+
+	if len(buf.dat) == 0 {
+		return 0, nil
+	}
+
+	var getFunc getItem
+	if buf.dat[0] < 0xc0 {
+		getFunc = (*buffer).getBytes
+	} else {
+		getFunc = (*buffer).getList
+	}
+
+	numItems := 0
+	for ; buf.idx < len(buf.dat); {
+		if _, err := getFunc(buf); err != nil {
+			return 0, fmt.Errorf("failed to seek on list index %d: %v", numItems, err)
+		}
+
+		numItems++
+	}
+
+	buf.idx = 0
+
+	return numItems, nil
+}
+
+func (buf *buffer) decodeStruct(val reflect.Value) error {
+	listDat, err := buf.getList()
+	if err != nil {
+		return err
+	}
+
+	listBuf := newBuffer(listDat)
+
+	for i := 0; i < val.NumField(); i++ {
+		v1 := val.Field(i)
+		dec, err := getDecoder(v1.Type())
+		if err != nil {
+			return err
+		}
+
+		if err := dec(listBuf, v1); err != nil {
+			return err
+		}
+	}
+
+	if listBuf.idx != len(listBuf.dat) {
+		return fmt.Errorf("did not parse entire list buffer. idx: %d, length: %d", listBuf.idx, len(listBuf.dat))
+	}
+
+	return nil
+}
+
+type getItem func(*buffer) ([]byte, error)
 
 func (buf *buffer) getList() ([]byte, error) {
 	var bytes []byte
@@ -98,25 +205,10 @@ func (buf *buffer) getList() ([]byte, error) {
 		}
 
 		bytes = dat[1+headerSiz:1+headerSiz+siz]
-		buf.idx += 1 + int(headerSiz+siz)
+		buf.idx += 1+int(headerSiz+siz)
 	}
 	
 	return bytes, nil
-}
-
-func (buf *buffer) decodeString(val reflect.Value) error {
-	// extract string
-	bs, err := buf.getBytes()
-	if err != nil {
-		return err
-	}
-
-	str := string(bs)
-
-	// set string
-	val.SetString(str)
-
-	return nil
 }
 
 func (buf *buffer) getBytes() ([]byte, error) {
@@ -154,6 +246,20 @@ func (buf *buffer) getBytes() ([]byte, error) {
 	}
 
 	return bytes, nil
+}
+
+func (buf *buffer) decodeString(val reflect.Value) error {
+	bs, err := buf.getBytes()
+	if err != nil {
+		return err
+	}
+
+	str := string(bs)
+
+	// set string
+	val.SetString(str)
+
+	return nil
 }
 
 func (buf *buffer) decodeBigEndian(dat []byte) uint {
