@@ -113,7 +113,7 @@ var encTests = []encTest{
 	{val: []byte{0x80}, output: "8180"},
 	{val: []byte{1, 2, 3}, output: "83010203"},
 
-	//{val: []namedByteType{1, 2, 3}, output: "83010203"},
+	// {val: []namedByteType{1, 2, 3}, output: "83010203"},
 	//{val: [...]namedByteType{1, 2, 3}, output: "83010203"},
 
 	{val: "", output: "80"},
@@ -137,19 +137,19 @@ var encTests = []encTest{
 	// // slices
 	{val: []uint{}, output: "C0"},
 	{val: []uint{1, 2, 3}, output: "C3010203"},
-	// {
-	// 	// [ [], [[]], [ [], [[]] ] ]
-	// 	val:    []interface{}{[]interface{}{}, [][]interface{}{{}}, []interface{}{[]interface{}{}, [][]interface{}{{}}}},
-	// 	output: "C7C0C1C0C3C0C1C0",
-	// },
+	{
+		// [ [], [[]], [ [], [[]] ] ]
+		val:    []interface{}{[]interface{}{}, [][]interface{}{{}}, []interface{}{[]interface{}{}, [][]interface{}{{}}}},
+		output: "C7C0C1C0C3C0C1C0",
+	},
 	{
 		val:    []string{"aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh", "iii", "jjj", "kkk", "lll", "mmm", "nnn", "ooo"},
 		output: "F83C836161618362626283636363836464648365656583666666836767678368686883696969836A6A6A836B6B6B836C6C6C836D6D6D836E6E6E836F6F6F",
 	},
-	// {
-	// 	val:    []interface{}{uint(1), uint(0xFFFFFF), []interface{}{[]uint{4, 5, 5}}, "abc"},
-	// 	output: "CE0183FFFFFFC4C304050583616263",
-	// },
+	{
+		val:    []interface{}{uint(1), uint(0xFFFFFF), []interface{}{[]uint{4, 5, 5}}, "abc"},
+		output: "CE0183FFFFFFC4C304050583616263",
+	},
 	{
 		val: [][]string{
 			{"asdf", "qwer", "zxcv"},
@@ -196,13 +196,13 @@ var encTests = []encTest{
 	// structs
 	{val: simplestruct{}, output: "C28080"},
 	{val: simplestruct{A: 3, B: "foo"}, output: "C50383666F6F"},
-	// {val: &recstruct{5, nil}, output: "C205C0"},
-	// {val: &recstruct{5, &recstruct{4, &recstruct{3, nil}}}, output: "C605C404C203C0"},
+	{val: &recstruct{5, nil}, output: "C205C0"},
+	{val: &recstruct{5, &recstruct{4, &recstruct{3, nil}}}, output: "C605C404C203C0"},
 	// {val: &tailRaw{A: 1, Tail: []RawValue{unhex("02"), unhex("03")}}, output: "C3010203"},
 	// {val: &tailRaw{A: 1, Tail: []RawValue{unhex("02")}}, output: "C20102"},
 	// {val: &tailRaw{A: 1, Tail: []RawValue{}}, output: "C101"},
 	// {val: &tailRaw{A: 1, Tail: nil}, output: "C101"},
-	// {val: &hasIgnoredField{A: 1, B: 2, C: 3}, output: "C20103"},
+	{val: &hasIgnoredField{A: 1, B: 2, C: 3}, output: "C20103"},
 
 	// nil
 	{val: (*uint)(nil), output: "80"},
@@ -214,11 +214,11 @@ var encTests = []encTest{
 	{val: (*[10]string)(nil), output: "C0"},
 	{val: (*[]interface{})(nil), output: "C0"},
 	{val: (*[]struct{ uint })(nil), output: "C0"},
-	// {val: (interface{})(nil), output: "C0"},
-	// {val: (*interface{})(nil), output: "C0"},
+	{val: (interface{})(nil), output: "C0"},
+	{val: (*interface{})(nil), output: "C0"},
 
 	// interfaces
-	//{val: []io.Reader{reader}, output: "C3C20102"}, // the contained value is a struct
+	// {val: []io.Reader{reader}, output: "C3C20102"}, // the contained value is a struct
 
 	// Encoder
 	//{val: (*testEncoder)(nil), output: "00000000"},

@@ -30,7 +30,7 @@ func Encode(w io.Writer, v interface{}) error {
 
 func encode(v interface{}) ([]byte, error) {
 	val := reflect.ValueOf(v)
-	typ := val.Type()
+	typ := reflect.TypeOf(v)
 
 	i := getInfo(typ)
 
@@ -56,8 +56,8 @@ func getInfo(typ reflect.Type) *encodeInfo {
 
 	if !ok {
 		ei = &encodeInfo{}
-		ei.populate(typ)
 		infoCache[typ] = ei
+		ei.populate(typ)
 	}
 
 	return ei
@@ -96,6 +96,8 @@ func (ei *encodeInfo) populate(typ reflect.Type) {
 	switch {
 	case typ.Implements(encoderInterface):
 		ei.s, ei.w = makeEncoderFuncs(typ)
+	case kind == reflect.Interface:
+		ei.s, ei.w = interfaceSizer, interfaceWriter
 	case typ.AssignableTo(bigIntPtr):
 		ei.s, ei.w = bigIntPtrSizer, bigIntPtrWriter
 	case typ.AssignableTo(bigInt):
@@ -118,6 +120,26 @@ func (ei *encodeInfo) populate(typ reflect.Type) {
 	case kind == reflect.Ptr:
 		ei.s, ei.w = makePtrFuncs(typ)
 	}
+}
+
+func interfaceSizer(v reflect.Value) (int, error) {
+	if v.IsNil() {
+		return 1, nil
+	}
+
+	v1 := v.Elem()
+	info := getInfo(v1.Type())
+	return info.s(v1)
+}
+
+func interfaceWriter(v reflect.Value, b []byte) []byte {
+	if v.IsNil() {
+		return append(b, 0xc0)
+	}
+
+	v1 := v.Elem()
+	info := getInfo(v1.Type())
+	return info.w(v1, b)
 }
 
 func makePtrFuncs(typ reflect.Type) (sizer, writer) {
@@ -269,9 +291,9 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 	sizer := func(v reflect.Value) (int, error) {
 		siz := 0
 		for i := 0; i < len(fs); i++ {
-			f := v.Field(i)
+			f := v.Field(fs[i].idx)
 
-			fsiz, err := fs[i].s(f)
+			fsiz, err := fs[i].ei.s(f)
 			if err != nil {
 				return 0, fmt.Errorf("error with %v: %v", fs[i].name, err)
 			}
@@ -292,9 +314,9 @@ func makeStructFuncs(typ reflect.Type) (sizer, writer, error) {
 
 		b = encodeListHeader(b, deriveListHeaderSize(siz))
 		for i := 0; i < len(fs); i++ {
-			f := v.Field(i)
+			f := v.Field(fs[i].idx)
 
-			b = fs[i].w(f, b)
+			b = fs[i].ei.w(f, b)
 		}
 
 		return b
@@ -385,10 +407,8 @@ type tags struct {
 
 type fieldInfo struct {
 	name     string
-	exported bool
-	tags     tags
-	s        sizer
-	w        writer
+	idx      int
+	ei       *encodeInfo
 }
 
 func getFieldInfo(typ reflect.Type) ([]*fieldInfo, error) {
@@ -408,7 +428,7 @@ func getFieldInfo(typ reflect.Type) ([]*fieldInfo, error) {
 		}
 
 		ei := getInfo(structF.Type)
-		f := &fieldInfo{name: structF.Name, exported: structF.PkgPath == "", tags: tags, s: ei.s, w: ei.w}
+		f := &fieldInfo{name: structF.Name, idx: i, ei: ei}
 		fs = append(fs, f)
 	}
 
