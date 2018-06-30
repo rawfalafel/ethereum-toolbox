@@ -36,7 +36,7 @@ func encode(v interface{}) ([]byte, error) {
 
 	siz, err := i.s(val)
 	if err != nil {
-		return nil, fmt.Errorf("Sizing failed: %v", err)
+		return nil, err
 	}
 
 	bs := make([]byte, 0, siz)
@@ -134,14 +134,14 @@ func makePtrFuncs(typ reflect.Type) (sizer, writer) {
 			t1 := typ.Elem()
 			k1 := t1.Kind()
 
-			if k1 == reflect.Array && isByte(t1) {
+			if k1 == reflect.Array && isByte(t1.Elem()) {
 				return append(b, 0x80)
 			} else if k1 == reflect.Struct || k1 == reflect.Array {
 				return append(b, 0xc0)
-			} else {
-				v1 := reflect.Zero(t1)	
-				return getInfo(t1).w(v1, b)
-			}	
+			} 
+
+			v1 := reflect.Zero(t1)	
+			return getInfo(t1).w(v1, b)
 		}
 
 		return ei.w(v.Elem(), b)
@@ -342,19 +342,19 @@ func deriveListHeaderSize(siz int) int {
 	switch {
 	case siz < 56:
 		return siz - 1 
-	case siz < (1 >> 8) + 2: 
+	case siz < (1 << 8) + 2: 
 		return siz - 2 
-	case siz < (1 >> 16) + 3:
+	case siz < (1 << 16) + 3:
 		return siz - 3
-	case siz < (1 >> 24) + 4:
+	case siz < (1 << 24) + 4:
 		return siz - 4
-	case siz < (1 >> 32) + 5:
+	case siz < (1 << 32) + 5:
 		return siz - 5
-	case siz < (1 >> 40) + 6:
+	case siz < (1 << 40) + 6:
 		return siz - 6
-	case siz < (1 >> 48) + 7:
+	case siz < (1 << 48) + 7:
 		return siz - 7
-	case siz < (1 >> 56) + 8:
+	case siz < (1 << 56) + 8:
 		return siz - 8
 	}
 
@@ -529,9 +529,9 @@ func byteSliceWriter(v reflect.Value, b []byte) []byte {
 
 	if len(bytes) == 1 {
 		return encodeByte(b, bytes[0])
-	} else {
-		return encodeBytes(b, bytes)
 	}
+
+	return encodeBytes(b, bytes)
 }
 
 func uintSizer(v reflect.Value) (int, error) {
