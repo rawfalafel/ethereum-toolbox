@@ -64,6 +64,10 @@ func getDecoder(typ reflect.Type) (decoder, error) {
 		return (*buffer).decodeBool, nil
 	case kind == reflect.String:
 		return (*buffer).decodeString, nil
+	case isByteArray(typ, kind):
+		return (*buffer).decodeByteArray, nil
+	case isByteSlice(typ, kind):
+		return (*buffer).decodeByteSlice, nil
 	case kind == reflect.Slice || kind == reflect.Array:
 		return (*buffer).decodeList, nil
 	case kind == reflect.Struct:
@@ -74,6 +78,45 @@ func getDecoder(typ reflect.Type) (decoder, error) {
 	}
 
 	return nil, fmt.Errorf("decoder does not support type: %v", typ)
+}
+
+func isByteArray(typ reflect.Type, kind reflect.Kind) bool {
+	return kind == reflect.Array && typ.Elem().Kind() == reflect.Uint8
+}
+
+func isByteSlice(typ reflect.Type, kind reflect.Kind) bool {
+	return kind == reflect.Slice && typ.Elem().Kind() == reflect.Uint8
+}
+
+func (buf *buffer) decodeByteArray(val reflect.Value) error {
+	dat, err := buf.getBytes()
+	if err != nil {
+		return err
+	}
+
+	vlen := val.Len()
+	dlen := len(dat)
+	if vlen > dlen {
+		return fmt.Errorf("byte array too short")
+	} else if vlen < dlen {
+		return fmt.Errorf("byte array too long")
+	}
+
+	for i := 0; i < vlen; i++ {
+		val.Index(i).SetUint(uint64(dat[i]))
+	}
+
+	return nil
+}
+
+func (buf *buffer) decodeByteSlice(val reflect.Value) error {
+	dat, err := buf.getBytes()
+	if err != nil {
+		return err
+	}
+
+	val.SetBytes(dat)
+	return nil
 }
 
 func (buf *buffer) decodeBigInt(val reflect.Value) error {
@@ -137,7 +180,7 @@ func (buf *buffer) decodeUint(val reflect.Value) error {
 		return nil
 	} else if siz > val.Type().Bits() {
 		return fmt.Errorf("error parsing uint. too many bytes to parse")
-	} 
+	}
 
 	val.SetUint(decodeBigEndian(dat))
 	return nil
@@ -289,7 +332,7 @@ func (buf *buffer) getList() ([]byte, error) {
 		if 1+headerSiz > uint(numBytes) {
 			return nil, fmt.Errorf("reached end of buffer")
 		}
-		
+
 		siz := buf.decodeBigEndian(dat[1:1+headerSiz])
 		if 1+headerSiz+siz > uint(numBytes) {
 			return nil, fmt.Errorf("reached end of buffer")
@@ -298,7 +341,7 @@ func (buf *buffer) getList() ([]byte, error) {
 		bytes = dat[1+headerSiz:1+headerSiz+siz]
 		buf.idx += 1+int(headerSiz+siz)
 	}
-	
+
 	return bytes, nil
 }
 

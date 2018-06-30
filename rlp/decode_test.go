@@ -64,6 +64,10 @@ var testcases = []testcase{
 	{ val: big.NewInt(1), ptr: new(*big.Int), dat: "01" },
 	{ val: veryBigInt, ptr: new(*big.Int), dat: "89FFFFFFFFFFFFFFFFFF" },
 	{ val: *big.NewInt(16), ptr: new(big.Int), dat: "10" },
+	// byte arrays
+	{ val: [1]byte{2}, ptr: new([1]byte), dat: "02" },
+	{ val: [1]byte{128}, ptr: new([1]byte), dat: "8180" },
+	{ val: [5]byte{1,2,3,4,5}, ptr: new([5]byte), dat: "850102030405" },
 }
 
 var (
