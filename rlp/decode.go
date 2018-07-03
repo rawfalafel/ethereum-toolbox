@@ -201,8 +201,6 @@ func (buf *buffer) decodeUint(val reflect.Value) error {
 	} else if siz == 1 {
 		val.SetUint(uint64(dat[0]))
 		return nil
-	} else if siz > val.Type().Bits() {
-		return fmt.Errorf("error parsing uint. too many bytes to parse")
 	}
 
 	val.SetUint(decodeBigEndian(dat))

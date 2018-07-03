@@ -196,7 +196,12 @@ func BenchmarkStruct1Slice(b *testing.B) {
 }
 
 func BenchmarkStruct2Slice(b *testing.B) {
-	in := []struct2{struct2{A: 100000000, B: 150000000}, struct2{A:5, B: 5}}
+	len := 10
+	in := make([]struct2, len)
+	for i := 0; i < len; i++ {
+		in[i] = struct2{A: 100000, B: 500000}
+	}
+
 	dat, err := EncodeToBytes(in)
 	if err != nil {
 		b.Errorf("error encoding: %v", err)
