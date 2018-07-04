@@ -8,7 +8,25 @@ import (
 func TestUpdate(t *testing.T) {
 	node := NewPatriciaNode(Empty)
 	node.update("do", "verb")
-	// node.update("dog", "puppy")
+
+	val, err := node.getValue("do")
+	if err != nil {
+		t.Errorf("failed to retrieve string: %v", err)
+	}
+
+	if val != "verb" {
+		t.Errorf("failed to retrieve correct value: %v", val)
+	}
+
+	node.update("dog", "puppy")
+	val, err = node.getValue("dog")
+	if err != nil {
+		t.Errorf("failed to retrieve string: %v", err)
+	}
+
+	if val != "puppy" {
+		t.Errorf("failed to retrieve correct value: %v", val)
+	}
 	// node.update("doge", "coin")
 	// node.update("horse", "stallion")
 }
