@@ -3,7 +3,9 @@ package mpt
 import (
 	"fmt"
 	"strings"
-	"github.com/rawfalafel/ethereum-toolbox/rlp"
+
+	// "github.com/rawfalafel/ethereum-toolbox/rlp"
+	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -36,44 +38,41 @@ func setNode(node *PatriciaNode) ([]byte, error) {
 	return digest[:], nil
 }
 
-// NodeType ...
-type NodeType int
-
 const (
 	// Empty ...
-	Empty     NodeType = 0
+	Empty uint = 0
 	// Branch ...
-	Branch    NodeType = 1
+	Branch uint = 1
 	// Leaf ...
-	Leaf      NodeType = 2
+	Leaf uint = 2
 	// Extension ...
-	Extension NodeType = 3
+	Extension uint = 3
 )
 
 // PatriciaNode ...
 type PatriciaNode struct {
-	data [][]uint8
-	nodeType NodeType
+	Data     [][]uint8
+	NodeType uint
 }
 
 // NewPatriciaNode ...
-func NewPatriciaNode(nodeType NodeType) (*PatriciaNode) {
+func NewPatriciaNode(nodeType uint) *PatriciaNode {
 	switch nodeType {
 	case Empty:
-		return &PatriciaNode{ nil, Empty }
+		return &PatriciaNode{nil, Empty}
 	case Branch:
-		return &PatriciaNode{ make([][]byte, branchDataSize), Branch }
+		return &PatriciaNode{make([][]byte, branchDataSize), Branch}
 	case Leaf:
-		return &PatriciaNode{ make([][]byte, leafExtensionDataSize), Leaf }
+		return &PatriciaNode{make([][]byte, leafExtensionDataSize), Leaf}
 	case Extension:
-		return &PatriciaNode{ make([][]byte, leafExtensionDataSize), Extension }
+		return &PatriciaNode{make([][]byte, leafExtensionDataSize), Extension}
 	}
 
 	panic("invalid nodeType")
 }
 
 func convertPathToHex(path string) []uint8 {
-	pathAsInt := make([]uint8, len(path) * 2)
+	pathAsInt := make([]uint8, len(path)*2)
 	for i := 0; i < len(path); i++ {
 		pathAsInt[i*2] = uint8(path[i]) / 16
 		pathAsInt[i*2+1] = uint8(path[i]) % 16
@@ -93,12 +92,12 @@ func convertHexToString(hex []uint8) string {
 }
 
 func compactEncoding(path []uint8, isLeaf bool) []uint8 {
-	var lead uint8 = 0
+	var lead uint8
 	if isLeaf {
 		lead += 2
 	}
 
-	var isOdd = len(path) % 2 == 1
+	var isOdd = len(path)%2 == 1
 	size := len(path) + 1
 
 	if isOdd {
@@ -125,14 +124,14 @@ func encodePath(path string) []byte {
 }
 
 func (r *PatriciaNode) convertToLeaf(path []uint8, value []uint8) {
-	r.nodeType = Leaf
-	r.data = make([][]uint8, leafExtensionDataSize)
+	r.NodeType = Leaf
+	r.Data = make([][]uint8, leafExtensionDataSize)
 
-	r.data[0] = compactEncoding(path, true)
-	r.data[1] = value
+	r.Data[0] = compactEncoding(path, true)
+	r.Data[1] = value
 }
 
-func (r *PatriciaNode) convertToBranch() (error) {
+func (r *PatriciaNode) convertToBranch() error {
 	// TODO: convert r into branch, update r.data, create new node with remainder, save first step in path
 	node := NewPatriciaNode(Leaf)
 	idx := 0
@@ -142,32 +141,37 @@ func (r *PatriciaNode) convertToBranch() (error) {
 		return err
 	}
 
-	r.data[idx] = digest
+	r.Data[idx] = digest
 	return nil
 }
 
 func (r *PatriciaNode) convertToExtension(baseLength int) (*PatriciaNode, error) {
 	var start = 1
-	if r.data[0][0] % 2 == 0 {
+	if r.Data[0][0]%2 == 0 {
 		start = 2
 	}
 
-	end := start+baseLength
-
-	fork := NewPatriciaNode(r.nodeType)
-	fork.data[0] = compactEncoding(r.data[0][end+1:], r.nodeType == Leaf)
-	fork.data[1] = r.data[1]
-
-	digest, err := setNode(fork)
-	if err != nil {
-		return nil, err
-	}
+	end := start + baseLength
 
 	branch := NewPatriciaNode(Branch)
-	branch.data[r.data[0][end]] = digest
 
-	r.data[0] = compactEncoding(r.data[0][start:end], false)
-	r.nodeType = Extension
+	if end != len(r.Data[0]) {
+		fork := NewPatriciaNode(r.NodeType)
+		fork.Data[0] = compactEncoding(r.Data[0][end+1:], r.NodeType == Leaf)
+		fork.Data[1] = r.Data[1]
+
+		digest, err := setNode(fork)
+		if err != nil {
+			return nil, err
+		}
+
+		branch.Data[r.Data[0][end]] = digest
+		r.Data[0] = compactEncoding(r.Data[0][start:end], false)
+	} else {
+		branch.Data[branchDataSize-1] = r.Data[1]
+	}
+
+	r.NodeType = Extension
 
 	return branch, nil
 }
@@ -201,11 +205,11 @@ func (r *PatriciaNode) _update(path []uint8, value string) ([]byte, error) {
 	}
 
 	switch {
-	case r.nodeType == Empty:
+	case r.NodeType == Empty:
 		r.convertToLeaf(path, val)
 		return setNode(r)
-	case r.nodeType == Branch:
-		node, ok := getNode(r.data[path[0]])
+	case r.NodeType == Branch:
+		node, ok := getNode(r.Data[path[0]])
 		if !ok {
 			node = NewPatriciaNode(Empty)
 		}
@@ -216,14 +220,13 @@ func (r *PatriciaNode) _update(path []uint8, value string) ([]byte, error) {
 			return nil, err
 		}
 
-		r.data[path[0]] = digest
+		r.Data[path[0]] = digest
 		return setNode(r)
-	case r.nodeType == Leaf || r.nodeType == Extension:
+	case r.NodeType == Leaf || r.NodeType == Extension:
 		baseLength := r.getBaseLength(path)
 
-		// if the first step isn't the same
-		if baseLength == 0 {
-			// convert r into a Branch
+		switch {
+		case baseLength == 0:
 			err := r.convertToBranch()
 			if err != nil {
 				return nil, err
@@ -235,32 +238,38 @@ func (r *PatriciaNode) _update(path []uint8, value string) ([]byte, error) {
 				return nil, err
 			}
 
-			r.data[path[0]] = digest
+			r.Data[path[0]] = digest
 			return setNode(r)
+		case r.NodeType == Leaf || (r.NodeType == Extension && baseLength != r.getPathLength()):
+			// convert r into an Extension
+			branch, err := r.convertToExtension(baseLength)
+			if err != nil {
+				return nil, err
+			}
+
+			node := NewPatriciaNode(Empty)
+			digest, err := node._update(path[baseLength+1:], value)
+			if err != nil {
+				return nil, err
+			}
+
+			branch.Data[path[baseLength]] = digest
+
+			digest, err = setNode(branch)
+			if err != nil {
+				return nil, err
+			}
+
+			r.Data[1] = digest
+			return setNode(r)
+		default:
+			branch, ok := getNode(r.Data[1])
+			if !ok {
+				return nil, fmt.Errorf("node not found: %v", r.Data[1])
+			}
+
+			return branch._update(path[baseLength:], value)
 		}
-
-		// convert r into an Extension
-		branch, err := r.convertToExtension(baseLength)
-		if err != nil {
-			return nil, err
-		}
-
-		node := NewPatriciaNode(Empty)
-		digest, err := node._update(path[baseLength+1:], value)
-		if err != nil {
-			return nil, err
-		}
-
-		branch.data[path[baseLength]] = digest
-
-		println("branch type:", branch.nodeType)
-		digest, err = setNode(branch)
-		if err != nil {
-			return nil, err
-		}
-
-		r.data[1] = digest
-		return setNode(r)
 	}
 
 	panic("this shouldn't happen")
@@ -268,54 +277,58 @@ func (r *PatriciaNode) _update(path []uint8, value string) ([]byte, error) {
 
 func (r *PatriciaNode) getPathLength() int {
 	var i = 1
-	if r.data[0][0] % 2 == 0 {
+	if r.Data[0][0]%2 == 0 {
 		i = 2
 	}
 
-	return len(r.data[0]) - i
+	return len(r.Data[0]) - i
 }
 
 func (r *PatriciaNode) getBaseLength(path []uint8) int {
-	var i = 1
-	if r.data[0][0] % 2 == 0 {
-		i = 2
+	var i int
+	var j = 1
+	if r.Data[0][0]%2 == 0 {
+		j = 2
 	}
 
-	for j := 0; j < len(r.data[0]); j++ {
-		if r.data[0][i] != path[i] {
-			continue
+	for i = 0; i < len(path) && j < len(r.Data[0]); {
+		if r.Data[0][j] != path[i] {
+			break
 		}
 		i++
+		j++
 	}
 
 	return i
 }
 
 func (r *PatriciaNode) getStep(num int) uint8 {
-	if r.data[0][0] %2 == 0 {
+	if r.Data[0][0]%2 == 0 {
 		num++
 	} else {
 		num += 2
 	}
 
-	if num < len(r.data[0]) {
+	if num < len(r.Data[0]) {
 		return 0
 	}
 
-	return r.data[0][num]
+	return r.Data[0][num]
 }
 
 func (r *PatriciaNode) getValue(path string) (string, error) {
 	encodedPath := convertPathToHex(path)
+	fmt.Printf("path: %v\n", encodedPath)
+	defer fmt.Print("\n")
 
 	return r._getValue(encodedPath)
 }
 
 func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
-	switch r.nodeType {
+	switch r.NodeType {
 	case Extension:
-		println(fmt.Sprintf("extension: %v", r.data))
-		node, ok := getNode(r.data[1])
+		fmt.Printf("extension: %v\n", r.Data)
+		node, ok := getNode(r.Data[1])
 		if !ok {
 			return "", fmt.Errorf("not found")
 		}
@@ -324,22 +337,22 @@ func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 		return node._getValue(path[start:])
 	case Leaf:
 		val := new(string)
-		err := rlp.DecodeBytes(r.data[1], val)
+		err := rlp.DecodeBytes(r.Data[1], val)
 		if err != nil {
 			return "", err
 		}
-		println(fmt.Sprintf("leaf: %v %v", r.data[0], *val))
+		fmt.Printf("leaf: %v %v\n", r.Data[0], *val)
 		return *val, nil
 	case Branch:
-		println(fmt.Sprintf("branch: %v", r.data))
+		fmt.Printf("branch: %v\n", r.Data)
 		if len(path) == 0 {
 			val := new(string)
-			dat := []byte(r.data[branchDataSize-1])
+			dat := []byte(r.Data[branchDataSize-1])
 			rlp.DecodeBytes(dat, val)
 			return *val, nil
 		}
 
-		node, ok := getNode(r.data[path[0]])
+		node, ok := getNode(r.Data[path[0]])
 		if !ok {
 			return "", fmt.Errorf("path not found")
 		}

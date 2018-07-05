@@ -57,7 +57,9 @@ func getInfo(typ reflect.Type) *encodeInfo {
 	if !ok {
 		ei = &encodeInfo{}
 		infoCache[typ] = ei
-		ei.populate(typ)
+		if err := ei.populate(typ); err != nil {
+			delete(infoCache, typ)
+		}
 	}
 
 	return ei
@@ -85,11 +87,11 @@ type encodeInfo struct {
 	w   writer
 }
 
-func (ei *encodeInfo) populate(typ reflect.Type) {
+func (ei *encodeInfo) populate(typ reflect.Type) error {
 	ei.typ = typ
 	if typ == nil {
 		ei.s, ei.w = nilSizer, nilWriter
-		return
+		return nil
 	}
 
 	kind := typ.Kind()
@@ -112,14 +114,18 @@ func (ei *encodeInfo) populate(typ reflect.Type) {
 		ei.s, ei.w = byteSliceSizer, byteSliceWriter
 	case kind == reflect.Array && isByte(typ.Elem()):
 		ei.s, ei.w = byteArraySizer, byteArrayWriter
-	case kind == reflect.Slice || kind == reflect.Array: 
+	case kind == reflect.Slice || kind == reflect.Array:
 		ei.s, ei.w = makeSliceFuncs(typ)
 	case kind == reflect.Struct:
 		s, w, _ := makeStructFuncs(typ)
 		ei.s, ei.w = s, w
 	case kind == reflect.Ptr:
 		ei.s, ei.w = makePtrFuncs(typ)
+	default:
+		return fmt.Errorf("typ %v is not RLP-serializable", typ)
 	}
+
+	return nil
 }
 
 func interfaceSizer(v reflect.Value) (int, error) {
@@ -146,11 +152,11 @@ func makePtrFuncs(typ reflect.Type) (sizer, writer) {
 	ei := getInfo(typ.Elem())
 
 	return func(v reflect.Value) (int, error) {
-		if v.IsNil() { 
+		if v.IsNil() {
 			return 1, nil
 		}
 
-		return ei.s(v.Elem())		
+		return ei.s(v.Elem())
 	}, func(v reflect.Value, b []byte) []byte {
 		if v.IsNil() {
 			t1 := typ.Elem()
@@ -160,14 +166,14 @@ func makePtrFuncs(typ reflect.Type) (sizer, writer) {
 				return append(b, 0x80)
 			} else if k1 == reflect.Struct || k1 == reflect.Array {
 				return append(b, 0xc0)
-			} 
+			}
 
-			v1 := reflect.Zero(t1)	
+			v1 := reflect.Zero(t1)
 			return getInfo(t1).w(v1, b)
 		}
 
 		return ei.w(v.Elem(), b)
-	} 
+	}
 }
 
 func bigIntNoPtrSizer(v reflect.Value) (int, error) {
@@ -178,7 +184,7 @@ func bigIntNoPtrSizer(v reflect.Value) (int, error) {
 func bigIntPtrSizer(v reflect.Value) (int, error) {
 	if v.IsNil() {
 		return 1, nil
-	} 
+	}
 
 	v1 := v.Interface().(*big.Int)
 	return bigIntSizer(v1)
@@ -190,7 +196,7 @@ func bigIntSizer(i *big.Int) (int, error) {
 		return 0, fmt.Errorf("rlp: cannot encode negative *big.Int")
 	} else if sign == 0 {
 		return 1, nil
-	} 
+	}
 
 	intAsBytes := i.Bytes()
 	byteHeaderSize, err := getByteHeaderSize(intAsBytes)
@@ -211,7 +217,7 @@ func bigIntPtrWriter(v reflect.Value, b []byte) []byte {
 		return append(b, 0x80)
 	}
 
-	v1 := v.Interface().(*big.Int) 
+	v1 := v.Interface().(*big.Int)
 	return bigIntWriter(v1, b)
 }
 
@@ -219,8 +225,8 @@ func bigIntWriter(i *big.Int, b []byte) []byte {
 	vb := i.Bytes()
 	if len(vb) == 1 {
 		return encodeByte(b, vb[0])
-	} 
-		
+	}
+
 	return encodeBytes(b, vb)
 }
 
@@ -363,9 +369,9 @@ func makeSliceFuncs(typ reflect.Type) (sizer, writer) {
 func deriveListHeaderSize(siz int) int {
 	switch {
 	case siz < 56:
-		return siz - 1 
-	case siz < (1 << 8) + 2: 
-		return siz - 2 
+		return siz - 1
+	case siz < (1 << 8) + 2:
+		return siz - 2
 	case siz < (1 << 16) + 3:
 		return siz - 3
 	case siz < (1 << 24) + 4:
@@ -570,7 +576,7 @@ func uintWriter(v reflect.Value, b []byte) []byte {
 		return append(b, 0x80)
 	} else if v1 < 128 {
 		return encodeByte(b, byte(v1))
-	} 
+	}
 
 	return encodeBytes(b, convertBigEndian(uint(v1)))
 }
