@@ -156,11 +156,11 @@ func TestExtensionConversionMixed(t *testing.T) {
 		return
 	}
 
-	// _, err = node.update("horse", "stallion")
-	// if err != nil {
-	// 	t.Errorf("failed to update: %v", err)
-	// 	return
-	// }
+	_, err = node.update("horse", "stallion")
+	if err != nil {
+		t.Errorf("failed to update: %v", err)
+		return
+	}
 
 	val, err := node.getValue("do")
 	if err != nil {
@@ -192,15 +192,15 @@ func TestExtensionConversionMixed(t *testing.T) {
 		return
 	}
 
-	// val, err = node.getValue("horsse")
-	// if err != nil {
-	// 	t.Errorf("failed to get: %v", err)
-	// }
+	val, err = node.getValue("horsse")
+	if err != nil {
+		t.Errorf("failed to get: %v", err)
+	}
 
-	// if val != "stallion" {
-	// 	t.Errorf("failed to retrieve correct value: %v", val)
-	// 	return
-	// }
+	if val != "stallion" {
+		t.Errorf("failed to retrieve correct value: %v", val)
+		return
+	}
 }
 
 func TestConvertPathToHex(t *testing.T) {

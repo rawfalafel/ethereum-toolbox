@@ -268,7 +268,13 @@ func (r *PatriciaNode) _update(path []uint8, value string) ([]byte, error) {
 				return nil, fmt.Errorf("node not found: %v", r.Data[1])
 			}
 
-			return branch._update(path[baseLength:], value)
+			digest, err := branch._update(path[baseLength:], value)
+			if err != nil {
+				return nil, fmt.Errorf("branch update failed: %v", err)
+			}
+
+			r.Data[1] = digest
+			return setNode(r)
 		}
 	}
 
