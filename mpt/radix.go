@@ -23,7 +23,10 @@ func getNode(hash []uint8) (*PatriciaNode, bool) {
 	}
 
 	node := new(PatriciaNode)
-	rlp.DecodeBytes(data, node)
+	if err := rlp.DecodeBytes(data, node); err != nil {
+		panic(fmt.Sprintf("failed to parse bytes: %v", err))
+	}
+
 	return node, true
 }
 
