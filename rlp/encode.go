@@ -368,7 +368,7 @@ func makeSliceFuncs(typ reflect.Type) (sizer, writer) {
 
 func deriveListHeaderSize(siz int) int {
 	switch {
-	case siz < 56:
+	case siz < 57:
 		return siz - 1
 	case siz < (1 << 8) + 2:
 		return siz - 2

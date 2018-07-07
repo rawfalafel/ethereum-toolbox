@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	// "github.com/rawfalafel/ethereum-toolbox/rlp"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/rawfalafel/ethereum-toolbox/rlp"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -327,8 +326,6 @@ func (r *PatriciaNode) getStep(num int) uint8 {
 
 func (r *PatriciaNode) getValue(path string) (string, error) {
 	encodedPath := convertPathToHex(path)
-	fmt.Printf("path: %v\n", encodedPath)
-	defer fmt.Print("\n")
 
 	return r._getValue(encodedPath)
 }
@@ -336,7 +333,6 @@ func (r *PatriciaNode) getValue(path string) (string, error) {
 func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 	switch r.NodeType {
 	case Extension:
-		fmt.Printf("extension: %v\n", r.Data)
 		node, ok := getNode(r.Data[1])
 		if !ok {
 			return "", fmt.Errorf("not found")
@@ -350,10 +346,8 @@ func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		fmt.Printf("leaf: %v %v\n", r.Data[0], *val)
 		return *val, nil
 	case Branch:
-		fmt.Printf("branch: %v\n", r.Data)
 		if len(path) == 0 {
 			val := new(string)
 			dat := []byte(r.Data[branchDataSize-1])
@@ -368,7 +362,6 @@ func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 
 		return node._getValue(path[1:])
 	case Empty:
-		println("Empty")
 		return "", fmt.Errorf("empty node")
 	}
 

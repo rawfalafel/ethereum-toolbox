@@ -350,7 +350,7 @@ func (buf *buffer) getList() ([]byte, error) {
 	numBytes := len(dat)
 	if dat[0] < 0xc0 {
 		return nil, fmt.Errorf("invalid leading byte: %x", dat[0])
-	} else if dat[0] < 0xf7 {
+	} else if dat[0] < 0xf8 {
 		siz := int(dat[0] - 0xc0)
 		if 1+siz > numBytes {
 			return nil, fmt.Errorf("reached end of buffer")
