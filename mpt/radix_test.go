@@ -136,6 +136,63 @@ func TestExtensionConversion3(t *testing.T) {
 	}
 }
 
+func TestUpdate1(t *testing.T) {
+	var err error
+	var val string
+
+	node := NewPatriciaNode(Empty)
+	_, err = node.update("do", "verb")
+	if err != nil {
+		t.Errorf("failed to update: %v", err)
+		return
+	}
+
+	_, err = node.update("apple", "apple")
+	if err != nil {
+		t.Errorf("failed to update: %v", err)
+		return
+	}
+
+	_, err = node.update("zebra", "lebron")
+	if err != nil {
+		t.Errorf("failed to update: %v", err)
+		return
+	}
+
+	val, err = node.getValue("do")
+	if err != nil {
+		t.Errorf("failed to retrieve string: %v", err)
+		return
+	}
+
+	if val != "verb" {
+		t.Errorf("failed to retrieve correct value: %v", val)
+		return
+	}
+
+	val, err = node.getValue("apple")
+	if err != nil {
+		t.Errorf("failed to retrieve string: %v", err)
+		return
+	}
+
+	if val != "apple" {
+		t.Errorf("failed to retrieve correct value: %v", val)
+		return
+	}
+
+	val, err = node.getValue("zebra")
+	if err != nil {
+		t.Errorf("failed to retrieve string: %v", err)
+		return
+	}
+
+	if val != "lebron" {
+		t.Errorf("failed to retrieve correct value: %v", val)
+		return
+	}
+}
+
 func TestExtensionConversionMixed(t *testing.T) {
 	node := NewPatriciaNode(Empty)
 	_, err := node.update("do", "verb")

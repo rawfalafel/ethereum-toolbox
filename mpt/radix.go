@@ -15,7 +15,7 @@ var nodeStore = map[[32]byte][]byte{}
 
 func getNode(hash []uint8) (*PatriciaNode, bool) {
 	var digest [32]byte
-	copy(digest[:], []byte(hash)[:])
+	copy(digest[:], []byte(hash))
 	data, ok := nodeStore[digest]
 	if !ok {
 		return nil, false
@@ -134,16 +134,25 @@ func (r *PatriciaNode) convertToLeaf(path []uint8, value []uint8) {
 }
 
 func (r *PatriciaNode) convertToBranch() error {
-	// TODO: convert r into branch, update r.data, create new node with remainder, save first step in path
-	node := NewPatriciaNode(Leaf)
-	idx := 0
+	var start = 1
+	if r.Data[0][0]%2 == 0 {
+		start = 2
+	}
+
+	path := r.Data[0][start:]
+
+	node := NewPatriciaNode(r.NodeType)
+	node.Data[0] = compactEncoding(path[1:], r.NodeType == Leaf)
+	node.Data[1] = r.Data[1]
 
 	digest, err := setNode(node)
 	if err != nil {
 		return err
 	}
 
-	r.Data[idx] = digest
+	r.Data = make([][]byte, branchDataSize)
+	r.Data[path[0]] = digest
+	r.NodeType = Branch
 	return nil
 }
 
@@ -235,7 +244,7 @@ func (r *PatriciaNode) _update(path []uint8, value string) ([]byte, error) {
 			}
 
 			node := NewPatriciaNode(Empty)
-			digest, err := node._update(path[baseLength+1:], value)
+			digest, err := node._update(path[1:], value)
 			if err != nil {
 				return nil, err
 			}
@@ -326,6 +335,7 @@ func (r *PatriciaNode) getStep(num int) uint8 {
 
 func (r *PatriciaNode) getValue(path string) (string, error) {
 	encodedPath := convertPathToHex(path)
+	println(fmt.Sprintf("\npath: %v", encodedPath))
 
 	return r._getValue(encodedPath)
 }
@@ -333,6 +343,7 @@ func (r *PatriciaNode) getValue(path string) (string, error) {
 func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 	switch r.NodeType {
 	case Extension:
+		println(fmt.Sprintf("Extension: %v", r.Data))
 		node, ok := getNode(r.Data[1])
 		if !ok {
 			return "", fmt.Errorf("not found")
@@ -341,6 +352,7 @@ func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 		start := r.getPathLength()
 		return node._getValue(path[start:])
 	case Leaf:
+		println(fmt.Sprintf("Leaf: %v", r.Data))
 		val := new(string)
 		err := rlp.DecodeBytes(r.Data[1], val)
 		if err != nil {
@@ -348,6 +360,7 @@ func (r *PatriciaNode) _getValue(path []uint8) (string, error) {
 		}
 		return *val, nil
 	case Branch:
+		println(fmt.Sprintf("Branch: %v", r.Data))
 		if len(path) == 0 {
 			val := new(string)
 			dat := []byte(r.Data[branchDataSize-1])
